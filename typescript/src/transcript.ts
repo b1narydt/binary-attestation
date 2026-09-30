@@ -189,7 +189,7 @@ function validateArtifact(value: unknown): SecuritySnapshotBodyV1['providerArtif
     content: requireString(value.content, 'artifact.content'),
     digest: requireString(value.digest, 'artifact.digest'),
   };
-  const content = decodeB64Url(artifact.content, 'artifact.content');
+  const content = decodeB64Url(artifact.content, 'artifact.content', undefined, 16 * 1024 * 1024);
   const digest = decodeB64Url(artifact.digest, 'artifact.digest', 32);
   if (!equalDigest(sha256Bytes(content), digest))
     throw new Denial('malformed', 'provider artifact digest mismatch');
@@ -215,7 +215,7 @@ export function validateSecuritySnapshot(value: unknown): SignedSecuritySnapshot
     signature: requireString(value.signature, 'snapshot.signature'),
   };
   const trustDigest = decodeB64Url(snapshot.trustDigest, 'trustDigest', 32);
-  decodeB64Url(snapshot.signature, 'snapshot.signature');
+  decodeB64Url(snapshot.signature, 'snapshot.signature', undefined, 16 * 1024 * 1024);
   if (!equalDigest(sha256Bytes(jcsBytes(body)), trustDigest))
     throw new Denial('trust_snapshot_invalid', 'trust digest mismatch');
   return snapshot;

@@ -134,7 +134,9 @@ function parseTransport(value: unknown): BCAP1TransportMessageV1 {
   };
   decodeB64Url(result.messageId, 'messageId', 16);
   decodeB64Url(result.contextDigest, 'contextDigest', 32);
-  decodeB64Url(result.payload, 'payload');
+  // Validate the allocation cap at envelope parsing time, before a caller can
+  // reach the later payload decode/JSON parse path.
+  decodeB64Url(result.payload, 'payload', undefined, 16 * 1024 * 1024);
   decodeB64Url(result.payloadDigest, 'payloadDigest', 32);
   return result;
 }

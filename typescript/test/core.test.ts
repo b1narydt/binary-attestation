@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import snapshotVectors from '../../vectors/bcap1-security-snapshot-jcs.json' with { type: 'json' };
 import transcriptVectors from '../../vectors/bcap1-transcript.json' with { type: 'json' };
@@ -184,6 +184,23 @@ describe('BCAP1 A0 strict validation', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(Denial);
       expect((error as Denial).code).toBe('resource_limit');
+    }
+  });
+
+  it('rejects oversized snapshot artifact bytes before calling atob', () => {
+    const signed = structuredClone(snapshotVectors.valid[0]!.signedSnapshot);
+    signed.body.providerArtifacts[0]!.content = oversizedBase64Url();
+    const decode = vi.spyOn(globalThis, 'atob');
+    try {
+      try {
+        validateSecuritySnapshot(signed);
+        throw new Error('oversized artifact unexpectedly accepted');
+      } catch (error) {
+        expect((error as Denial).code).toBe('resource_limit');
+      }
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
     }
   });
   it('rejects JSON numeric and noncanonical u64 fields without coercion', () => {
@@ -643,6 +660,25 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
 });
 
 describe('BCAP1 transport and browser boundary', () => {
+  it('rejects oversized transport payload bytes before calling atob', () => {
+    const vector = transportVectors.valid.find((entry) => entry.id === 'challenge-jcs')!;
+    const payload = oversizedBase64Url();
+    const decode = vi.spyOn(globalThis, 'atob');
+    try {
+      expect(() =>
+        validateTransportMessage({
+          message: { ...vector.message, payload },
+          authenticatedPeer: vector.authenticatedPeer,
+          localSubject: vector.authenticatedLocalSubject,
+          profile: 'brc103-websocket-v1',
+          expectedType: 'challenge',
+        }),
+      ).toThrow(Denial);
+      expect(decode.mock.calls.some(([encoded]) => encoded === payload)).toBe(false);
+    } finally {
+      decode.mockRestore();
+    }
+  });
   it('consumes transport JCS/digest vectors', () => {
     for (const vector of transportVectors.valid) {
       expect(new TextDecoder().decode(decodeB64Url(vector.message.payload, 'payload'))).toBe(
@@ -765,4 +801,8 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
     current = next as Record<string, unknown>;
   }
   current[parts.at(-1)!] = value;
+}
+
+function oversizedBase64Url(): string {
+  return 'A'.repeat(Math.ceil(((16 * 1024 * 1024 + 1) * 4) / 3));
 }

@@ -186,7 +186,23 @@ export interface PolicyEvaluator {
 export interface SecuritySnapshotSource {
   /** Must provide a linearizable, current snapshot view. */
   current(): SignedSecuritySnapshotV1 | undefined;
+  /**
+   * A linearizable admission fence. Implementations MUST serialize this with
+   * snapshot publication, verify the exact expected epoch/policy/trust
+   * revision remains current and valid at `nowMs`, and durably record the
+   * admission as the transaction's linearization point. It MUST return only
+   * after that transaction commits; callers mirror the local terminal allow
+   * only afterward. Distributed stores must never invoke a local callback from
+   * their transaction or implement this as a read followed by a later write.
+   */
+  fence(
+    expected: Pick<AttestationChallengeV1, 'securityEpoch' | 'policyDigest' | 'trustDigest'>,
+    nowMs: bigint,
+    admission: { challengeId: B64Url; claims: VerifiedClaimsV1 },
+  ): void;
 }
+
+export type SecuritySnapshotStore = SecuritySnapshotSource;
 
 export type BCAP1TransportProfile =
   'brc103-websocket-v1' | 'brc104-https-v1' | 'brc103-atlas-messagebox-v1';
@@ -208,4 +224,14 @@ export interface AuthenticatedMessage<T> {
   transportProfile: BCAP1TransportProfile;
   messageId: string;
   payload: T;
+}
+
+/** A carrier adapter may implement this only after authenticating its BRC peer. */
+export interface AuthenticatedAttestationChannel {
+  readonly localSubject: AttestationSubject;
+  readonly profile: BCAP1TransportProfile;
+  sendChallenge(peer: AttestationSubject, challenge: AttestationChallengeV1): Promise<void>;
+  receiveChallenge(signal?: AbortSignal): Promise<AuthenticatedMessage<AttestationChallengeV1>>;
+  sendEvidence(peer: AttestationSubject, bundle: EvidenceBundleV1): Promise<void>;
+  receiveEvidence(signal?: AbortSignal): Promise<AuthenticatedMessage<EvidenceBundleV1>>;
 }

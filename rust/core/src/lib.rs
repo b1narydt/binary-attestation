@@ -28,7 +28,8 @@ pub use provider::{
 pub use snapshot::{InMemorySnapshotStore, SecuritySnapshotStore};
 pub use transcript::{TranscriptPreimage, binding_digest, provider_binding_digest};
 pub use transport::{
-    AuthenticatedTransportMessage, MessageType, TransportMessage, TransportProfile,
+    AuthenticatedAttestationChannel, AuthenticatedMessage, AuthenticatedTransportMessage,
+    ChannelFuture, MessageType, TransportMessage, TransportProfile,
 };
 pub use types::*;
 pub use verify::{CoreVerifier, VerificationInput};

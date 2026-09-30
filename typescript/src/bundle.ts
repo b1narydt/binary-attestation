@@ -33,6 +33,11 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
   if (!Array.isArray(componentsRaw) || componentsRaw.length === 0)
     throw new Denial('malformed', 'components must be a non-empty array');
   if (componentsRaw.length > 32) throw new Denial('resource_limit', 'too many components');
+  const edgesRaw = value.bindingEdges;
+  if (edgesRaw !== undefined && !Array.isArray(edgesRaw))
+    throw new Denial('malformed', 'bindingEdges must be an array');
+  if (edgesRaw !== undefined && edgesRaw.length > 64)
+    throw new Denial('resource_limit', 'too many binding edges');
   let encodedBundleUpperBound = 0;
   for (const component of componentsRaw) {
     if (!isRecord(component)) continue;
@@ -41,14 +46,13 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
     if (typeof component.endorsements === 'string')
       encodedBundleUpperBound += Math.floor((component.endorsements.length * 3) / 4);
   }
+  for (const edge of edgesRaw ?? []) {
+    if (isRecord(edge) && typeof edge.evidence === 'string')
+      encodedBundleUpperBound += Math.floor((edge.evidence.length * 3) / 4);
+  }
   if (encodedBundleUpperBound > 16 * 1024 * 1024)
     throw new Denial('resource_limit', 'bundle too large');
   const components = componentsRaw.map(validateComponent);
-  const edgesRaw = value.bindingEdges;
-  if (edgesRaw !== undefined && !Array.isArray(edgesRaw))
-    throw new Denial('malformed', 'bindingEdges must be an array');
-  if (edgesRaw !== undefined && edgesRaw.length > 64)
-    throw new Denial('resource_limit', 'too many binding edges');
   const bundle: EvidenceBundleV1 = {
     protocolVersion: 1,
     challengeId: requireString(value.challengeId, 'challengeId'),
@@ -103,7 +107,8 @@ function validateEdge(value: unknown): EvidenceBindingEdgeV1 {
       ? {}
       : { evidence: requireString(value.evidence, 'edge evidence') }),
   };
-  if (edge.evidence !== undefined) decodeB64Url(edge.evidence, 'edge evidence');
+  if (edge.evidence !== undefined)
+    decodeB64Url(edge.evidence, 'edge evidence', undefined, 2 * 1024 * 1024);
   return edge;
 }
 
@@ -113,6 +118,9 @@ function validateBundleBytes(bundle: EvidenceBundleV1): void {
     bytes += decodeB64Url(component.evidence, 'evidence').byteLength;
     if (component.endorsements)
       bytes += decodeB64Url(component.endorsements, 'endorsements').byteLength;
+  }
+  for (const edge of bundle.bindingEdges ?? []) {
+    if (edge.evidence) bytes += decodeB64Url(edge.evidence, 'edge evidence').byteLength;
   }
   if (bytes > 16 * 1024 * 1024) throw new Denial('resource_limit', 'bundle too large');
 }
@@ -164,17 +172,86 @@ export async function verifyBundleComponents(input: {
     const verifier = registry.provider(component.provider);
     if (verifier === undefined)
       throw new Denial('unsupported_provider', `no local verifier for ${component.provider}`);
-    const output = await verifier.verify(component, expected, nowMs, snapshot);
-    if (output.componentId !== component.componentId || output.provider !== component.provider)
-      throw new Denial('malformed', 'verifier output does not match component');
-    // A component may bind through a registered, verified composition edge.
-    // The graph below decides whether this value reaches a direct binding root.
-    decodeB64Url(output.bindingDigest, 'component bindingDigest', 64);
-    parseU64(output.validUntilMs, 'component validUntilMs');
+    const output = validateVerifiedComponent(
+      await verifier.verify(component, expected, nowMs, snapshot),
+      component,
+      nowMs,
+    );
     verified.push(output);
   }
   await verifyBindingGraph(bundle, verified, registry, expected, snapshot);
   return verified;
+}
+
+function validateVerifiedComponent(
+  output: unknown,
+  source: EvidenceComponentV1,
+  nowMs: bigint,
+): VerifiedComponentV1 {
+  const keys = [
+    'componentId',
+    'provider',
+    'evidenceDigest',
+    'bindingDigest',
+    'platform',
+    'measurements',
+    'tcb',
+    'advisories',
+    'validUntilMs',
+  ];
+  if (!isRecord(output) || !hasOnly(output, keys))
+    throw new Denial('malformed', 'invalid verified component');
+  const component: VerifiedComponentV1 = {
+    componentId: validateString(output.componentId, 'verified componentId'),
+    provider: validateString(output.provider, 'verified provider'),
+    evidenceDigest: requireString(output.evidenceDigest, 'evidenceDigest'),
+    bindingDigest: requireString(output.bindingDigest, 'bindingDigest'),
+    platform: validateClaimMap(output.platform, 'platform'),
+    measurements: validateMeasurements(output.measurements),
+    tcb: validateClaimMap(output.tcb, 'tcb'),
+    advisories: validateAdvisories(output.advisories),
+    validUntilMs: requireString(output.validUntilMs, 'validUntilMs'),
+  };
+  if (component.componentId !== source.componentId || component.provider !== source.provider)
+    throw new Denial('malformed', 'verifier output does not match component');
+  const reportedEvidenceDigest = decodeB64Url(component.evidenceDigest, 'evidenceDigest', 32);
+  if (!equalBytes(reportedEvidenceDigest, sha256Bytes(decodeB64Url(source.evidence, 'evidence'))))
+    throw new Denial('binding_mismatch', 'verifier evidence digest mismatch');
+  decodeB64Url(component.bindingDigest, 'component bindingDigest', 64);
+  if (parseU64(component.validUntilMs, 'component validUntilMs') <= nowMs)
+    throw new Denial('endorsements_stale', 'component is already expired');
+  return component;
+}
+
+function validateClaimMap(value: unknown, name: string): Record<string, string | number | boolean> {
+  if (!isRecord(value)) throw new Denial('malformed', `${name} must be a claim map`);
+  const entries = Object.entries(value);
+  if (entries.length > 256) throw new Denial('resource_limit', `${name} has too many claims`);
+  const result: Record<string, string | number | boolean> = {};
+  for (const [key, claim] of entries) {
+    const validatedKey = validateString(key, `${name} key`);
+    if (typeof claim === 'string') result[validatedKey] = validateString(claim, `${name} value`);
+    else if (typeof claim === 'boolean') result[validatedKey] = claim;
+    else if (typeof claim === 'number' && Number.isFinite(claim)) result[validatedKey] = claim;
+    else throw new Denial('malformed', `${name} has invalid claim value`);
+  }
+  return result;
+}
+
+function validateMeasurements(value: unknown): Record<string, string> {
+  const claims = validateClaimMap(value, 'measurements');
+  const result: Record<string, string> = {};
+  for (const [key, claim] of Object.entries(claims)) {
+    if (typeof claim !== 'string') throw new Denial('malformed', 'measurements must be strings');
+    result[key] = claim;
+  }
+  return result;
+}
+
+function validateAdvisories(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 256)
+    throw new Denial('resource_limit', 'invalid advisories');
+  return value.map((advisory) => validateString(advisory, 'advisory'));
 }
 
 async function verifyBindingGraph(

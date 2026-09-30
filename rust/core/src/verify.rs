@@ -114,14 +114,40 @@ impl CoreVerifier {
         };
         match result {
             Ok(claims) => {
-                // The re-read immediately before the state transition catches
-                // security updates occurring after policy evaluation.
-                let terminal = self
-                    .current_matching_snapshot(&challenge, terminal_now)
-                    .map(|_| ());
-                self.challenges
-                    .finish(challenge.challenge_id.as_str(), terminal, terminal_now)?;
-                Ok(claims)
+                // All validity windows are exclusive. Do not commit a shared
+                // allow whose returned claims are already unusable at the
+                // terminal fence, even if the challenge itself remains live.
+                if claims.valid_until_ms.get() <= terminal_now {
+                    return match self.challenges.finish(
+                        challenge.challenge_id.as_str(),
+                        Err(Denial::EndorsementsStale),
+                        terminal_now,
+                    ) {
+                        Err(terminal_denial) => Err(terminal_denial),
+                        Ok(()) => Err(Denial::EndorsementsStale),
+                    };
+                }
+                // Commit at the shared epoch fence first. The local store is a
+                // cache/mirror only; it cannot remain allowed if that shared
+                // transaction refuses.
+                match self.snapshots.terminal_fence(&challenge, terminal_now) {
+                    Ok(()) => {
+                        self.challenges.finish(
+                            challenge.challenge_id.as_str(),
+                            Ok(()),
+                            terminal_now,
+                        )?;
+                        Ok(claims)
+                    }
+                    Err(denial) => match self.challenges.finish(
+                        challenge.challenge_id.as_str(),
+                        Err(denial),
+                        terminal_now,
+                    ) {
+                        Err(terminal_denial) => Err(terminal_denial),
+                        Ok(()) => Err(denial),
+                    },
+                }
             }
             Err(denial) => {
                 match self.challenges.finish(

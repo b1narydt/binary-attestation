@@ -11,14 +11,17 @@ import {
   challengePreimage,
   Denial,
   InMemoryChallengeStore,
+  InMemorySecuritySnapshotStore,
   VerifierRegistry,
   bindingDigest,
   decodeB64Url,
+  evidenceDigest,
   encodeB64Url,
   jcsBytes,
   sha256Bytes,
   validateSecuritySnapshot,
   validateChallenge,
+  validateEvidenceBundle,
   validateTransportMessage,
   type AttestationChallengeV1,
   type EvidenceComponentV1,
@@ -57,6 +60,7 @@ function snapshot(epoch = '1', policyDigest = bytes(32, 2)): SignedSecuritySnaps
 
 function setup(now = 1_000n) {
   let current = snapshot();
+  const snapshots = new InMemorySecuritySnapshotStore(current);
   let clock = now;
   let randomByte = 9;
   const registry = new VerifierRegistry().registerProvider({
@@ -65,7 +69,7 @@ function setup(now = 1_000n) {
       return {
         componentId: component.componentId,
         provider: component.provider,
-        evidenceDigest: bytes(32),
+        evidenceDigest: evidenceDigest(component),
         bindingDigest: encodeB64Url(expectedBinding),
         platform: {},
         measurements: {},
@@ -76,7 +80,7 @@ function setup(now = 1_000n) {
     },
   });
   const core = new AttestationCore(
-    { current: () => current },
+    snapshots,
     registry,
     undefined,
     { nowMs: () => clock },
@@ -118,6 +122,7 @@ function setup(now = 1_000n) {
   });
   return {
     core,
+    snapshots,
     policy,
     issue,
     bundle,
@@ -126,6 +131,7 @@ function setup(now = 1_000n) {
     },
     setSnapshot: (value: SignedSecuritySnapshotV1) => {
       current = value;
+      snapshots.publish(value);
     },
   };
 }
@@ -303,6 +309,9 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     expect(
       await core.verify({ bundle: bundle(challenge), authenticatedSubject: wrongSubject, policy }),
     ).toMatchObject({ denial: 'subject_unauthenticated' });
+    expect(
+      await core.verify({ bundle: bundle(challenge), authenticatedSubject: subject, policy }),
+    ).toMatchObject({ decision: 'allow' });
     const second = issue();
     expect(
       await core.verify({
@@ -311,6 +320,168 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
         policy,
       }),
     ).toMatchObject({ denial: 'unsupported_provider' });
+  });
+
+  it('uses the shared fence as the terminal authorization point across update races', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const updateFirst = setup();
+    const challenge = updateFirst.issue();
+    const policy: PolicyEvaluator = {
+      ...updateFirst.policy,
+      async evaluate() {
+        await gate;
+        return { subjectBinding: 'brc103', validUntilMs: '8000' };
+      },
+    };
+    const pending = updateFirst.core.verify({
+      bundle: updateFirst.bundle(challenge),
+      authenticatedSubject: subject,
+      policy,
+    });
+    await Promise.resolve();
+    updateFirst.setSnapshot(snapshot('2', updateFirst.policy.policyDigest));
+    release();
+    expect(await pending).toMatchObject({ denial: 'security_epoch_changed' });
+    expect(updateFirst.snapshots.admission(challenge.challengeId)).toBeUndefined();
+
+    const allowFirst = setup();
+    const admitted = allowFirst.issue();
+    expect(
+      await allowFirst.core.verify({
+        bundle: allowFirst.bundle(admitted),
+        authenticatedSubject: subject,
+        policy: allowFirst.policy,
+      }),
+    ).toMatchObject({ decision: 'allow' });
+    expect(allowFirst.snapshots.admission(admitted.challengeId)).toBeDefined();
+    allowFirst.setSnapshot(snapshot('2', allowFirst.policy.policyDigest));
+    expect(allowFirst.snapshots.admission(admitted.challengeId)).toBeDefined();
+  });
+
+  it('fails closed on hostile verifier output and already-expired policy results', async () => {
+    const fixture = setup();
+    fixture.core.registry.registerProvider({
+      provider: 'hostile',
+      async verify(component, expectedBinding) {
+        return {
+          componentId: component.componentId,
+          provider: component.provider,
+          evidenceDigest: bytes(32, 0),
+          bindingDigest: encodeB64Url(expectedBinding),
+          platform: { invalid: {} as unknown as string },
+          measurements: {},
+          tcb: {},
+          advisories: [],
+          validUntilMs: '9000',
+          extra: true,
+        } as unknown as never;
+      },
+    });
+    const hostile = fixture.issue();
+    expect(
+      await fixture.core.verify({
+        bundle: fixture.bundle(hostile, { provider: 'hostile' }),
+        authenticatedSubject: subject,
+        policy: fixture.policy,
+      }),
+    ).toMatchObject({ denial: 'malformed' });
+
+    fixture.core.registry.registerProvider({
+      provider: 'bad-digest',
+      async verify(component, expectedBinding) {
+        return {
+          componentId: component.componentId,
+          provider: component.provider,
+          evidenceDigest: bytes(32, 0),
+          bindingDigest: encodeB64Url(expectedBinding),
+          platform: {},
+          measurements: {},
+          tcb: {},
+          advisories: [],
+          validUntilMs: '9000',
+        };
+      },
+    });
+    const mismatchedEvidence = fixture.issue();
+    expect(
+      await fixture.core.verify({
+        bundle: fixture.bundle(mismatchedEvidence, { provider: 'bad-digest' }),
+        authenticatedSubject: subject,
+        policy: fixture.policy,
+      }),
+    ).toMatchObject({ denial: 'binding_mismatch' });
+
+    fixture.core.registry.registerProvider({
+      provider: 'stale-component',
+      async verify(component, expectedBinding) {
+        return {
+          componentId: component.componentId,
+          provider: component.provider,
+          evidenceDigest: evidenceDigest(component),
+          bindingDigest: encodeB64Url(expectedBinding),
+          platform: {},
+          measurements: {},
+          tcb: {},
+          advisories: [],
+          validUntilMs: '1000',
+        };
+      },
+    });
+    const staleComponent = fixture.issue();
+    expect(
+      await fixture.core.verify({
+        bundle: fixture.bundle(staleComponent, { provider: 'stale-component' }),
+        authenticatedSubject: subject,
+        policy: fixture.policy,
+      }),
+    ).toMatchObject({ denial: 'endorsements_stale' });
+
+    const expiredPolicy = fixture.issue();
+    const policy: PolicyEvaluator = {
+      ...fixture.policy,
+      async evaluate() {
+        return { subjectBinding: 'brc103', validUntilMs: '1000' };
+      },
+    };
+    expect(
+      await fixture.core.verify({
+        bundle: fixture.bundle(expiredPolicy),
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ denial: 'policy_mismatch' });
+  });
+
+  it('bounds edge evidence before relation verification and enforces hard TTL configuration', () => {
+    const { issue, bundle } = setup();
+    const challenge = issue();
+    expect(() =>
+      validateEvidenceBundle({
+        ...bundle(challenge),
+        bindingEdges: [
+          {
+            parentComponentId: 'cpu',
+            childComponentId: 'cpu',
+            relation: 'test',
+            evidence: 'A'.repeat(Math.ceil(((2 * 1024 * 1024 + 1) * 4) / 3)),
+          },
+        ],
+      }),
+    ).toThrow(Denial);
+    expect(
+      () =>
+        new AttestationCore(
+          new InMemorySecuritySnapshotStore(snapshot()),
+          new VerifierRegistry(),
+          undefined,
+          undefined,
+          undefined,
+          300_001n,
+        ),
+    ).toThrow(Denial);
   });
 
   it('accepts indirect bindings only through a registered edge and refuses invalid graphs', async () => {
@@ -322,7 +493,7 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
           return {
             componentId: component.componentId,
             provider: component.provider,
-            evidenceDigest: bytes(32),
+            evidenceDigest: evidenceDigest(component),
             bindingDigest:
               component.componentId === 'root' ? encodeB64Url(expectedBinding) : bytes(64, 0),
             platform: {},
@@ -447,12 +618,13 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     const { issue } = setup();
     const first = issue();
     store.issue(first, 1_000n);
-    expect(() => store.claim(first.challengeId, 999n)).toThrow(Denial);
+    expect(() => store.claim(first.challengeId, subject, subject, 999n)).toThrow(Denial);
     const expiring = { ...first, challengeId: bytes(16, 11), issuedAtMs: '1', expiresAtMs: '2' };
     store.issue(expiring, 1n);
-    const next = { ...first, challengeId: bytes(16, 12) };
-    expect(() => store.issue(next, 1n)).toThrow(Denial);
-    store.issue(next, 2n); // expiry sweeps the outstanding entry
+    const blocked = { ...first, challengeId: bytes(16, 12), issuedAtMs: '1', expiresAtMs: '3' };
+    expect(() => store.issue(blocked, 1n)).toThrow(Denial);
+    const released = { ...first, challengeId: bytes(16, 13), issuedAtMs: '2', expiresAtMs: '3' };
+    store.issue(released, 2n); // expiry sweeps the outstanding entry
   });
 });
 

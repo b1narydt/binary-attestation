@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -11,6 +13,39 @@ pub enum TransportProfile {
     Brc103WebsocketV1,
     Brc104HttpsV1,
     Brc103AtlasMessageboxV1,
+}
+
+/// A peer identity derived by a mutually authenticated carrier, never an
+/// asserted envelope field.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedMessage<T> {
+    pub authenticated_peer: AttestationSubject,
+    pub transport_profile: TransportProfile,
+    pub message_id: B64Url,
+    pub payload: T,
+}
+
+pub type ChannelFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Denial>> + Send + 'a>>;
+
+/// Transport-neutral BCAP1 authenticated channel (§12). Implementations must
+/// authenticate their registered carrier before exposing a message here. This
+/// provider-neutral crate deliberately includes no network implementation.
+pub trait AuthenticatedAttestationChannel: Send + Sync {
+    fn local_subject(&self) -> &AttestationSubject;
+    fn profile(&self) -> TransportProfile;
+
+    fn send_challenge(
+        &self,
+        peer: AttestationSubject,
+        challenge: Challenge,
+    ) -> ChannelFuture<'_, ()>;
+    fn receive_challenge(&self) -> ChannelFuture<'_, AuthenticatedMessage<Challenge>>;
+    fn send_evidence(
+        &self,
+        peer: AttestationSubject,
+        bundle: EvidenceBundle,
+    ) -> ChannelFuture<'_, ()>;
+    fn receive_evidence(&self) -> ChannelFuture<'_, AuthenticatedMessage<EvidenceBundle>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

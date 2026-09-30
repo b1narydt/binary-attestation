@@ -147,6 +147,8 @@ impl Clock for ManualClock {
 
 struct FixtureVerifier {
     clock: Option<Arc<ManualClock>>,
+    advance_to: u64,
+    valid_until: u64,
 }
 impl EvidenceVerifier for FixtureVerifier {
     fn provider(&self) -> &'static str {
@@ -159,7 +161,7 @@ impl EvidenceVerifier for FixtureVerifier {
         _now: u64,
     ) -> Result<VerifiedComponent, Denial> {
         if let Some(clock) = &self.clock {
-            clock.set(20);
+            clock.set(self.advance_to);
         }
         Ok(VerifiedComponent {
             component_id: component.component_id.clone(),
@@ -174,7 +176,8 @@ impl EvidenceVerifier for FixtureVerifier {
             measurements: Default::default(),
             tcb: Default::default(),
             advisories: vec![],
-            valid_until_ms: serde_json::from_str("\"100\"").expect("u64"),
+            valid_until_ms: serde_json::from_value(json!(self.valid_until.to_string()))
+                .expect("u64"),
         })
     }
 }
@@ -194,7 +197,7 @@ impl BindingRelationVerifier for FixtureRelation {
         Ok(())
     }
 }
-struct AllowPolicy;
+struct AllowPolicy(u64);
 impl PolicyEvaluator for AllowPolicy {
     fn evaluate(
         &self,
@@ -205,7 +208,7 @@ impl PolicyEvaluator for AllowPolicy {
     ) -> Result<PolicyDecision, Denial> {
         Ok(PolicyDecision {
             subject_binding: "fixture-subject-proof-v1".into(),
-            valid_until_ms: 100,
+            valid_until_ms: self.0,
         })
     }
 }
@@ -261,6 +264,16 @@ fn core(
     snapshot: SignedSecuritySnapshot,
     clock: Arc<ManualClock>,
 ) -> (CoreVerifier, Arc<ChallengeStore>) {
+    core_with_validity(snapshot, clock, 20, 100, 100)
+}
+
+fn core_with_validity(
+    snapshot: SignedSecuritySnapshot,
+    clock: Arc<ManualClock>,
+    advance_to: u64,
+    component_valid_until: u64,
+    policy_valid_until: u64,
+) -> (CoreVerifier, Arc<ChallengeStore>) {
     let snapshots = Arc::new(InMemorySnapshotStore::new());
     snapshots.publish(snapshot).expect("publish");
     let challenges = Arc::new(ChallengeStore::new(4, 10));
@@ -268,6 +281,8 @@ fn core(
     providers
         .register(Arc::new(FixtureVerifier {
             clock: Some(clock.clone()),
+            advance_to,
+            valid_until: component_valid_until,
         }))
         .expect("provider");
     let relations = Arc::new(RelationRegistry::new());
@@ -280,7 +295,7 @@ fn core(
             snapshots,
             providers,
             relations,
-            Arc::new(AllowPolicy),
+            Arc::new(AllowPolicy(policy_valid_until)),
             clock,
         ),
         challenges,
@@ -331,6 +346,27 @@ fn verification_rechecks_trusted_clock_before_allow() {
     assert_eq!(
         store.state(challenge.challenge_id.as_str(), 20),
         Ok(ChallengeState::ConsumedDeny(Denial::ChallengeExpired))
+    );
+}
+
+#[test]
+fn verification_refuses_claims_expired_at_terminal_fence() {
+    let clock = Arc::new(ManualClock::default());
+    clock.set(1);
+    // Provider validity expires while verification runs, but the challenge is
+    // still live. A stale claim must not reach the shared allow fence.
+    let (snapshot, challenge) = snapshot_and_challenge(20);
+    let (verifier, store) = core_with_validity(snapshot, clock, 2, 2, 100);
+    store.issue(challenge.clone(), 1).expect("issue");
+    let result = verifier.verify(VerificationInput {
+        authenticated_subject: &challenge.subject,
+        bundle: &bundle(&challenge, true),
+        transport_context_digest: &challenge.context_digest,
+    });
+    assert!(matches!(result, Err(Denial::EndorsementsStale)));
+    assert_eq!(
+        store.state(challenge.challenge_id.as_str(), 2),
+        Ok(ChallengeState::ConsumedDeny(Denial::EndorsementsStale))
     );
 }
 

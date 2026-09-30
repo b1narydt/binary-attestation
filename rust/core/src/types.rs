@@ -14,6 +14,7 @@ pub const MAX_STRING_BYTES: usize = 1_024;
 pub const MAX_COMPONENTS: usize = 32;
 pub const MAX_COMPONENT_EVIDENCE: usize = 2 * 1024 * 1024;
 pub const MAX_COMPONENT_ENDORSEMENTS: usize = 4 * 1024 * 1024;
+pub const MAX_BINDING_EDGE_EVIDENCE: usize = 2 * 1024 * 1024;
 pub const MAX_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_BINDING_EDGES: usize = 64;
 pub const MAX_CLAIM_KEYS: usize = 256;
@@ -367,6 +368,13 @@ impl EvidenceBindingEdge {
         ] {
             validate_text(value)?;
         }
+        if self
+            .evidence
+            .as_ref()
+            .is_some_and(|value| value.decoded_len() > MAX_BINDING_EDGE_EVIDENCE)
+        {
+            return Err(Denial::ResourceLimit);
+        }
         Ok(())
     }
 }
@@ -425,6 +433,12 @@ impl EvidenceBundle {
             if !ids.contains(&edge.parent_component_id) || !ids.contains(&edge.child_component_id) {
                 return Err(Denial::Malformed);
             }
+            decoded_total = decoded_total
+                .checked_add(edge.evidence.as_ref().map_or(0, B64Url::decoded_len))
+                .ok_or(Denial::ResourceLimit)?;
+        }
+        if decoded_total > MAX_BUNDLE_BYTES {
+            return Err(Denial::ResourceLimit);
         }
         Ok(())
     }

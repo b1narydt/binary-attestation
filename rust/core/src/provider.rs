@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     sync::{Arc, RwLock},
 };
 
@@ -63,7 +63,7 @@ impl PolicyDecision {
         valid_until_ms: u64,
     ) -> Result<VerifiedClaims, Denial> {
         crate::validate_text(&self.subject_binding)?;
-        if self.subject_binding.is_empty() || valid_until_ms < verified_at_ms {
+        if self.subject_binding.is_empty() || valid_until_ms <= verified_at_ms {
             return Err(Denial::PolicyMismatch);
         }
         Ok(VerifiedClaims::from_challenge(
@@ -97,10 +97,13 @@ impl ProviderRegistry {
             return Err(Denial::UnsupportedProvider);
         }
         let mut verifiers = self.verifiers.write().map_err(|_| Denial::InternalError)?;
-        if verifiers.insert(name.to_owned(), verifier).is_some() {
-            return Err(Denial::Malformed);
+        match verifiers.entry(name.to_owned()) {
+            Entry::Vacant(entry) => {
+                entry.insert(verifier);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Denial::Malformed),
         }
-        Ok(())
     }
 
     pub fn get(&self, provider: &str) -> Result<Arc<dyn EvidenceVerifier>, Denial> {
@@ -132,10 +135,13 @@ impl RelationRegistry {
             return Err(Denial::Malformed);
         }
         let mut verifiers = self.verifiers.write().map_err(|_| Denial::InternalError)?;
-        if verifiers.insert(relation.to_owned(), verifier).is_some() {
-            return Err(Denial::Malformed);
+        match verifiers.entry(relation.to_owned()) {
+            Entry::Vacant(entry) => {
+                entry.insert(verifier);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Denial::Malformed),
         }
-        Ok(())
     }
 
     pub fn get(&self, relation: &str) -> Result<Arc<dyn BindingRelationVerifier>, Denial> {

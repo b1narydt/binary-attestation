@@ -35,10 +35,16 @@ impl B64Url {
         {
             return Err(Denial::Malformed);
         }
-        let decoded = URL_SAFE_NO_PAD
-            .decode(&value)
-            .map_err(|_| Denial::Malformed)?;
-        if URL_SAFE_NO_PAD.encode(&decoded) != value {
+        let remainder = value.len() % 4;
+        if remainder == 1 {
+            return Err(Denial::Malformed);
+        }
+        // Canonical unpadded base64url requires unused final sextet bits to be
+        // zero. This proves re-encoding would not select an alias, without
+        // allocating a decoded copy first.
+        if let Some(last) = value.bytes().last().and_then(base64url_sextet)
+            && ((remainder == 2 && last & 0x0f != 0) || (remainder == 3 && last & 0x03 != 0))
+        {
             return Err(Denial::Malformed);
         }
         Ok(Self(value))
@@ -49,24 +55,42 @@ impl B64Url {
         Self(URL_SAFE_NO_PAD.encode(bytes))
     }
 
-    pub fn decode(&self) -> Vec<u8> {
+    /// Decodes only after the caller supplies a protocol bound.
+    pub fn decode_with_limit(&self, maximum_len: usize) -> Result<Vec<u8>, Denial> {
+        if self.decoded_len() > maximum_len {
+            return Err(Denial::ResourceLimit);
+        }
         URL_SAFE_NO_PAD
             .decode(&self.0)
-            .expect("B64Url is validated at construction")
+            .map_err(|_| Denial::Malformed)
     }
 
     pub fn bytes<const N: usize>(&self) -> Result<[u8; N], Denial> {
-        let decoded = self.decode();
+        if self.decoded_len() != N {
+            return Err(Denial::Malformed);
+        }
+        let decoded = self.decode_with_limit(N)?;
         decoded.try_into().map_err(|_| Denial::Malformed)
     }
 
     pub fn decoded_len(&self) -> usize {
-        // Validated base64url: this cannot fail.
-        self.decode().len()
+        let remainder = self.0.len() % 4;
+        (self.0.len() / 4) * 3 + usize::from(remainder == 2) + 2 * usize::from(remainder == 3)
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+fn base64url_sextet(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'-' => Some(62),
+        b'_' => Some(63),
+        _ => None,
     }
 }
 
@@ -206,8 +230,8 @@ impl ProviderPolicyArtifact {
         }
         if self.digest.decoded_len() != 32
             || !constant_time_eq(
-                &Sha256::digest(self.content.decode()),
-                &self.digest.decode(),
+                &Sha256::digest(self.content.decode_with_limit(MAX_BUNDLE_BYTES)?),
+                &self.digest.bytes::<32>()?,
             )
         {
             return Err(Denial::Malformed);
@@ -257,7 +281,7 @@ impl SignedSecuritySnapshot {
             artifact.validate()?;
         }
         let bytes = jcs_bytes(&serde_json::to_value(body).map_err(|_| Denial::Malformed)?)?;
-        if !constant_time_eq(&Sha256::digest(bytes), &self.trust_digest.decode()) {
+        if !constant_time_eq(&Sha256::digest(bytes), &self.trust_digest.bytes::<32>()?) {
             return Err(Denial::TrustSnapshotInvalid);
         }
         Ok(())

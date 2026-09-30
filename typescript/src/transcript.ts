@@ -157,6 +157,8 @@ function validateSnapshotBody(value: unknown): SecuritySnapshotBodyV1 {
     throw new Denial('malformed', 'invalid security snapshot body');
   if (!Array.isArray(value.providerArtifacts) || !isRecord(value.trustMaterial))
     throw new Denial('malformed', 'invalid snapshot collections');
+  if (value.providerArtifacts.length > 32)
+    throw new Denial('resource_limit', 'too many provider artifacts');
   const body: SecuritySnapshotBodyV1 = {
     securityEpoch: requireString(value.securityEpoch, 'securityEpoch'),
     policyId: validateString(value.policyId, 'policyId'),

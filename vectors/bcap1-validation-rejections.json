@@ -134,6 +134,15 @@
       "character": "a",
       "count": 1025,
       "reason": "over-limit string"
+    },
+    {
+      "id": "snapshot-over-artifact-limit",
+      "schema": "security-snapshot.schema.json",
+      "fixture": "bcap1-security-snapshot-jcs.json#empty-trust-material-and-artifact.signedSnapshot",
+      "operation": "repeat-array",
+      "path": "body.providerArtifacts",
+      "count": 33,
+      "reason": "more than 32 provider policy artifacts"
     }
   ]
 }

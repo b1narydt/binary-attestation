@@ -3,9 +3,9 @@ use std::sync::Arc;
 use binary_attestation_core::{
     AuthenticatedAttestationChannel, B64Url, BindingRelationVerifier, Challenge, ChallengeState,
     ChallengeStore, Denial, EvidenceBindingEdge, EvidenceBundle, EvidenceComponent,
-    EvidenceVerifier, InMemorySnapshotStore, MAX_BINDING_EDGE_EVIDENCE, PolicyDecision,
-    ProviderRegistry, RelationRegistry, SecuritySnapshotStore, SignedSecuritySnapshot,
-    VerifiedComponent,
+    EvidenceVerifier, InMemorySnapshotStore, MAX_BINDING_EDGE_EVIDENCE, MAX_BUNDLE_BYTES,
+    MAX_COMPONENT_EVIDENCE, PolicyDecision, ProviderRegistry, RelationRegistry,
+    SecuritySnapshotStore, SignedSecuritySnapshot, TransportMessage, VerifiedComponent,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -71,6 +71,52 @@ fn edge_evidence_has_own_and_total_bundle_resource_limits() {
     ));
     assert!(matches!(
         two_component_bundle(vec![0; MAX_BINDING_EDGE_EVIDENCE], 8).validate(),
+        Err(Denial::ResourceLimit)
+    ));
+}
+
+fn zero_base64url(decoded_len: usize) -> String {
+    let mut encoded = "AAAA".repeat(decoded_len / 3);
+    match decoded_len % 3 {
+        1 => encoded.push_str("AA"),
+        2 => encoded.push_str("AAA"),
+        _ => {}
+    }
+    encoded
+}
+
+#[test]
+fn base64url_tail_bits_and_oversized_encoded_inputs_refuse_without_decode() {
+    // These decode to the same bytes as AA/AAA but have non-zero unused tail
+    // bits, so canonical unpadded base64url must reject them syntactically.
+    assert!(matches!(B64Url::new("AB"), Err(Denial::Malformed)));
+    assert!(matches!(B64Url::new("AAB"), Err(Denial::Malformed)));
+    assert!(B64Url::new("AA").is_ok());
+    assert!(B64Url::new("AAA").is_ok());
+
+    let oversized_component =
+        B64Url::new(zero_base64url(MAX_COMPONENT_EVIDENCE + 1)).expect("syntactic only");
+    let mut bundle = two_component_bundle(vec![0], 0);
+    bundle.components[0].evidence = oversized_component;
+    assert!(matches!(bundle.validate(), Err(Denial::ResourceLimit)));
+
+    let subject = binary_attestation_core::AttestationSubject {
+        kind: "did".into(),
+        value: "peer".into(),
+    };
+    let message = TransportMessage {
+        protocol_version: 1,
+        message_type: binary_attestation_core::MessageType::Challenge,
+        message_id: B64Url::from_bytes(&[0; 16]),
+        sender: subject.clone(),
+        recipient: subject.clone(),
+        context_digest: B64Url::from_bytes(&[0; 32]),
+        payload_encoding: "rfc8785-jcs".into(),
+        payload: B64Url::new(zero_base64url(MAX_BUNDLE_BYTES + 1)).expect("syntactic only"),
+        payload_digest: B64Url::from_bytes(&[0; 32]),
+    };
+    assert!(matches!(
+        message.decode(subject.clone(), &subject),
         Err(Denial::ResourceLimit)
     ));
 }

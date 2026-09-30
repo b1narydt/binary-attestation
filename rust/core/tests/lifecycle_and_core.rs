@@ -166,7 +166,12 @@ impl EvidenceVerifier for FixtureVerifier {
         Ok(VerifiedComponent {
             component_id: component.component_id.clone(),
             provider: component.provider.clone(),
-            evidence_digest: B64Url::from_bytes(&Sha256::digest(component.evidence.decode())),
+            evidence_digest: B64Url::from_bytes(&Sha256::digest(
+                component
+                    .evidence
+                    .decode_with_limit(binary_attestation_core::MAX_COMPONENT_EVIDENCE)
+                    .expect("bounded evidence"),
+            )),
             binding_digest: if component.component_id == "parent" {
                 B64Url::from_bytes(&expected)
             } else {
@@ -264,7 +269,7 @@ fn core(
     snapshot: SignedSecuritySnapshot,
     clock: Arc<ManualClock>,
 ) -> (CoreVerifier, Arc<ChallengeStore>) {
-    core_with_validity(snapshot, clock, 20, 100, 100)
+    core_with_validity(snapshot, clock, 1, 100, 100)
 }
 
 fn core_with_validity(
@@ -317,16 +322,14 @@ fn indirect_relation_is_valid_but_unbound_child_refuses() {
     assert!(accepted.is_ok(), "{accepted:?}");
 
     let (snapshot, challenge) = snapshot_and_challenge(20);
-    let (core, store) = core(snapshot, clock);
+    let (core, store) = core(snapshot, clock.clone());
     store.issue(challenge.clone(), 1).expect("issue");
-    let denied = core.verify_at(
-        VerificationInput {
-            authenticated_subject: &challenge.subject,
-            bundle: &bundle(&challenge, false),
-            transport_context_digest: &challenge.context_digest,
-        },
-        1,
-    );
+    clock.set(1);
+    let denied = core.verify(VerificationInput {
+        authenticated_subject: &challenge.subject,
+        bundle: &bundle(&challenge, false),
+        transport_context_digest: &challenge.context_digest,
+    });
     assert!(matches!(denied, Err(Denial::ComponentUnbound)));
 }
 
@@ -335,7 +338,7 @@ fn verification_rechecks_trusted_clock_before_allow() {
     let clock = Arc::new(ManualClock::default());
     clock.set(1);
     let (snapshot, challenge) = snapshot_and_challenge(2);
-    let (verifier, store) = core(snapshot, clock);
+    let (verifier, store) = core_with_validity(snapshot, clock.clone(), 20, 100, 100);
     store.issue(challenge.clone(), 1).expect("issue");
     let result = verifier.verify(VerificationInput {
         authenticated_subject: &challenge.subject,
@@ -378,14 +381,11 @@ fn context_splice_and_composition_cycles_refuse() {
     let (verifier, store) = core(snapshot, clock.clone());
     store.issue(challenge.clone(), 1).expect("issue");
     let wrong_context = B64Url::from_bytes(&[9; 32]);
-    let context_result = verifier.verify_at(
-        VerificationInput {
-            authenticated_subject: &challenge.subject,
-            bundle: &bundle(&challenge, true),
-            transport_context_digest: &wrong_context,
-        },
-        1,
-    );
+    let context_result = verifier.verify(VerificationInput {
+        authenticated_subject: &challenge.subject,
+        bundle: &bundle(&challenge, true),
+        transport_context_digest: &wrong_context,
+    });
     assert!(matches!(context_result, Err(Denial::BindingMismatch)));
 
     let (snapshot, challenge) = snapshot_and_challenge(100);
@@ -402,13 +402,10 @@ fn context_splice_and_composition_cycles_refuse() {
             relation: "fixture-links-v1".into(),
             evidence: None,
         });
-    let cycle_result = verifier.verify_at(
-        VerificationInput {
-            authenticated_subject: &challenge.subject,
-            bundle: &cyclic,
-            transport_context_digest: &challenge.context_digest,
-        },
-        1,
-    );
+    let cycle_result = verifier.verify(VerificationInput {
+        authenticated_subject: &challenge.subject,
+        bundle: &cyclic,
+        transport_context_digest: &challenge.context_digest,
+    });
     assert!(matches!(cycle_result, Err(Denial::Malformed)));
 }

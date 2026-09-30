@@ -72,24 +72,13 @@ impl CoreVerifier {
     /// a terminal denial.
     pub fn verify(&self, input: VerificationInput<'_>) -> Result<VerifiedClaims, Denial> {
         let now_ms = self.clock.now_ms()?;
-        self.verify_started(input, now_ms, None)
-    }
-
-    /// Deterministic test hook. Production callers use [`Self::verify`], which
-    /// reads the configured trusted clock both at start and at finalization.
-    pub fn verify_at(
-        &self,
-        input: VerificationInput<'_>,
-        now_ms: u64,
-    ) -> Result<VerifiedClaims, Denial> {
-        self.verify_started(input, now_ms, Some(now_ms))
+        self.verify_started(input, now_ms)
     }
 
     fn verify_started(
         &self,
         input: VerificationInput<'_>,
         now_ms: u64,
-        fixed_terminal_now: Option<u64>,
     ) -> Result<VerifiedClaims, Denial> {
         input.bundle.validate()?;
         input.authenticated_subject.validate()?;
@@ -100,10 +89,7 @@ impl CoreVerifier {
             now_ms,
         )?;
         let result = self.verify_claimed(&challenge, input, now_ms);
-        let terminal_now = match fixed_terminal_now
-            .map(Ok)
-            .unwrap_or_else(|| self.clock.now_ms())
-        {
+        let terminal_now = match self.clock.now_ms() {
             Ok(now) => now,
             Err(denial) => {
                 let _ = self
@@ -184,8 +170,12 @@ impl CoreVerifier {
                 return Err(Denial::Malformed);
             }
             if !constant_time_eq(
-                &Sha256::digest(component.evidence.decode()),
-                &output.evidence_digest.decode(),
+                &Sha256::digest(
+                    component
+                        .evidence
+                        .decode_with_limit(crate::MAX_COMPONENT_EVIDENCE)?,
+                ),
+                &output.evidence_digest.bytes::<32>()?,
             ) {
                 return Err(Denial::BindingMismatch);
             }
@@ -346,7 +336,10 @@ fn reaches_direct_binding(
         return false;
     }
     let direct = components.get(component_id).is_some_and(|component| {
-        constant_time_eq(&component.binding_digest.decode(), expected_binding)
+        component
+            .binding_digest
+            .bytes::<64>()
+            .is_ok_and(|digest| constant_time_eq(&digest, expected_binding))
     });
     let result = direct
         || parents.get(component_id).is_some_and(|parent_ids| {

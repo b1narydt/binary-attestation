@@ -112,8 +112,14 @@ impl TransportMessage {
         {
             return Err(Denial::Malformed);
         }
-        let payload = self.payload.decode();
-        if !constant_time_eq(&Sha256::digest(&payload), &self.payload_digest.decode()) {
+        if self.payload.decoded_len() > crate::MAX_BUNDLE_BYTES {
+            return Err(Denial::ResourceLimit);
+        }
+        let payload = self.payload.decode_with_limit(crate::MAX_BUNDLE_BYTES)?;
+        if !constant_time_eq(
+            &Sha256::digest(&payload),
+            &self.payload_digest.bytes::<32>()?,
+        ) {
             return Err(Denial::BindingMismatch);
         }
         let value: serde_json::Value =

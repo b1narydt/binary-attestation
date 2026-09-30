@@ -14,17 +14,17 @@ impl TranscriptPreimage {
         challenge.validate()?;
         let mut output = Vec::with_capacity(512);
         output.extend_from_slice(CHALLENGE_DOMAIN);
-        field(&mut output, &challenge.challenge_id.decode())?;
-        field(&mut output, &challenge.nonce.decode())?;
+        field(&mut output, &challenge.challenge_id.bytes::<16>()?)?;
+        field(&mut output, &challenge.nonce.bytes::<32>()?)?;
         field(&mut output, challenge.subject.kind.as_bytes())?;
         field(&mut output, challenge.subject.value.as_bytes())?;
         field(&mut output, challenge.audience.as_bytes())?;
         field(&mut output, challenge.context.as_bytes())?;
-        field(&mut output, &challenge.context_digest.decode())?;
+        field(&mut output, &challenge.context_digest.bytes::<32>()?)?;
         field(&mut output, challenge.policy_id.as_bytes())?;
-        field(&mut output, &challenge.policy_digest.decode())?;
+        field(&mut output, &challenge.policy_digest.bytes::<32>()?)?;
         output.extend_from_slice(&challenge.security_epoch.get().to_be_bytes());
-        field(&mut output, &challenge.trust_digest.decode())?;
+        field(&mut output, &challenge.trust_digest.bytes::<32>()?)?;
         output.extend_from_slice(&challenge.issued_at_ms.get().to_be_bytes());
         output.extend_from_slice(&challenge.expires_at_ms.get().to_be_bytes());
         Ok(Self(output))

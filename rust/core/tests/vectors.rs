@@ -151,14 +151,23 @@ fn transport_kats_decode_only_with_authenticated_identities_and_digest() {
             serde_json::from_value(vector["authenticatedLocalSubject"].clone()).expect("local");
         assert!(message.decode(peer, &local).is_ok(), "{}", vector["id"]);
         assert_eq!(
-            message.payload.decode(),
+            message
+                .payload
+                .decode_with_limit(binary_attestation_core::MAX_BUNDLE_BYTES)
+                .expect("bounded payload"),
             vector["payloadJcsUtf8"]
                 .as_str()
                 .expect("payload")
                 .as_bytes()
         );
         assert_eq!(
-            Sha256::digest(message.payload.decode()).as_ref(),
+            Sha256::digest(
+                message
+                    .payload
+                    .decode_with_limit(binary_attestation_core::MAX_BUNDLE_BYTES)
+                    .expect("bounded payload"),
+            )
+            .as_ref(),
             hex_decode(vector["payloadDigestHex"].as_str().expect("digest"))
         );
     }

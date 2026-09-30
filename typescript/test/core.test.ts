@@ -172,6 +172,20 @@ describe('BCAP1 A0 strict validation', () => {
       expect(hex(sha256Bytes(jcsBytes(verified.body)))).toBe(vector.trustDigestHex);
     }
   });
+
+  it('rejects an over-limit snapshot provider artifact list before artifact decoding', () => {
+    const signed = structuredClone(snapshotVectors.valid[0]!.signedSnapshot);
+    signed.body.providerArtifacts = Array.from({ length: 33 }, () =>
+      structuredClone(signed.body.providerArtifacts[0]!),
+    );
+    try {
+      validateSecuritySnapshot(signed);
+      throw new Error('over-limit snapshot unexpectedly accepted');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Denial);
+      expect((error as Denial).code).toBe('resource_limit');
+    }
+  });
   it('rejects JSON numeric and noncanonical u64 fields without coercion', () => {
     const challenge = {
       protocolVersion: 1 as const,

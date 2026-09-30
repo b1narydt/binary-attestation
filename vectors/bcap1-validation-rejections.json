@@ -1,0 +1,139 @@
+{
+  "format": "bcap1-schema-rejections-v1",
+  "description": "Each case applies its operation to the named valid fixture and MUST be rejected before provider verification. delete removes a required property; set replaces a value. repeat is an exact UTF-8 ASCII construction.",
+  "cases": [
+    {
+      "id": "challenge-missing-required",
+      "schema": "challenge.schema.json",
+      "fixture": "bcap1-transcript.json#zero-minimum.input",
+      "operation": "delete",
+      "path": "nonce",
+      "reason": "missing required field"
+    },
+    {
+      "id": "challenge-unknown-field",
+      "schema": "challenge.schema.json",
+      "fixture": "bcap1-transcript.json#zero-minimum.input",
+      "operation": "set",
+      "path": "unexpected",
+      "value": true,
+      "reason": "unknown field"
+    },
+    {
+      "id": "challenge-wrong-type",
+      "schema": "challenge.schema.json",
+      "fixture": "bcap1-transcript.json#zero-minimum.input",
+      "operation": "set",
+      "path": "challengeId",
+      "value": 1,
+      "reason": "wrong type"
+    },
+    {
+      "id": "challenge-over-limit-string",
+      "schema": "challenge.schema.json",
+      "fixture": "bcap1-transcript.json#zero-minimum.input",
+      "operation": "repeat",
+      "path": "audience",
+      "character": "a",
+      "count": 1025,
+      "reason": "over-limit string"
+    },
+    {
+      "id": "evidence-missing-required",
+      "schema": "evidence-bundle.schema.json",
+      "fixture": "bcap1-transport.json#evidence-jcs.message.payload (base64url-decoded JCS)",
+      "operation": "delete",
+      "path": "components",
+      "reason": "missing required field"
+    },
+    {
+      "id": "evidence-component-unknown-field",
+      "schema": "evidence-bundle.schema.json",
+      "fixture": "bcap1-transport.json#evidence-jcs.message.payload (base64url-decoded JCS)",
+      "operation": "set",
+      "path": "components[0].unexpected",
+      "value": true,
+      "reason": "unknown field"
+    },
+    {
+      "id": "evidence-wrong-type",
+      "schema": "evidence-bundle.schema.json",
+      "fixture": "bcap1-transport.json#evidence-jcs.message.payload (base64url-decoded JCS)",
+      "operation": "set",
+      "path": "components[0].evidence",
+      "value": false,
+      "reason": "wrong type"
+    },
+    {
+      "id": "evidence-over-component-limit",
+      "schema": "evidence-bundle.schema.json",
+      "fixture": "bcap1-transport.json#evidence-jcs.message.payload (base64url-decoded JCS)",
+      "operation": "repeat-array",
+      "path": "components",
+      "count": 33,
+      "reason": "more than 32 components"
+    },
+    {
+      "id": "transport-missing-required",
+      "schema": "transport-message.schema.json",
+      "fixture": "bcap1-transport.json#challenge-jcs.message",
+      "operation": "delete",
+      "path": "payload",
+      "reason": "missing required field"
+    },
+    {
+      "id": "transport-unknown-field",
+      "schema": "transport-message.schema.json",
+      "fixture": "bcap1-transport.json#challenge-jcs.message",
+      "operation": "set",
+      "path": "unexpected",
+      "value": true,
+      "reason": "unknown field"
+    },
+    {
+      "id": "transport-wrong-type",
+      "schema": "transport-message.schema.json",
+      "fixture": "bcap1-transport.json#challenge-jcs.message",
+      "operation": "set",
+      "path": "messageId",
+      "value": 1,
+      "reason": "wrong type"
+    },
+    {
+      "id": "snapshot-missing-required",
+      "schema": "security-snapshot.schema.json",
+      "fixture": "bcap1-security-snapshot-jcs.json#empty-trust-material-and-artifact.signedSnapshot",
+      "operation": "delete",
+      "path": "body.policyId",
+      "reason": "missing required field"
+    },
+    {
+      "id": "snapshot-unknown-field",
+      "schema": "security-snapshot.schema.json",
+      "fixture": "bcap1-security-snapshot-jcs.json#empty-trust-material-and-artifact.signedSnapshot",
+      "operation": "set",
+      "path": "body.unexpected",
+      "value": true,
+      "reason": "unknown field"
+    },
+    {
+      "id": "snapshot-wrong-type",
+      "schema": "security-snapshot.schema.json",
+      "fixture": "bcap1-security-snapshot-jcs.json#empty-trust-material-and-artifact.signedSnapshot",
+      "operation": "set",
+      "path": "body.securityEpoch",
+      "value": 0,
+      "reason": "wrong type"
+    },
+    {
+      "id": "snapshot-over-limit-string",
+      "schema": "security-snapshot.schema.json",
+      "fixture": "bcap1-security-snapshot-jcs.json#empty-trust-material-and-artifact.signedSnapshot",
+      "operation": "repeat",
+      "path": "body.signerKeyId",
+      "character": "a",
+      "count": 1025,
+      "reason": "over-limit string"
+    }
+  ]
+}

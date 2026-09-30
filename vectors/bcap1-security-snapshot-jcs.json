@@ -1,0 +1,71 @@
+{
+  "format": "bcap1-security-snapshot-jcs-v1",
+  "valid": [
+    {
+      "id": "empty-trust-material-and-artifact",
+      "body": {
+        "securityEpoch": "0",
+        "policyId": "policy:test:v1",
+        "policyDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "providerArtifacts": [
+          {
+            "artifactId": "empty-gpu-policy",
+            "provider": "dstack-v1",
+            "mediaType": "application/vnd.dstack.gpu-policy+json;version=1",
+            "canonicalization": "rfc8785-jcs",
+            "content": "e30",
+            "digest": "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o"
+          }
+        ],
+        "trustMaterial": {},
+        "validFromMs": "0",
+        "validUntilMs": "1",
+        "signerKeyId": "test-key-1"
+      },
+      "bodyJcsUtf8": "{\"policyDigest\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"policyId\":\"policy:test:v1\",\"providerArtifacts\":[{\"artifactId\":\"empty-gpu-policy\",\"canonicalization\":\"rfc8785-jcs\",\"content\":\"e30\",\"digest\":\"RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o\",\"mediaType\":\"application/vnd.dstack.gpu-policy+json;version=1\",\"provider\":\"dstack-v1\"}],\"securityEpoch\":\"0\",\"signerKeyId\":\"test-key-1\",\"trustMaterial\":{},\"validFromMs\":\"0\",\"validUntilMs\":\"1\"}",
+      "trustDigestHex": "05ac87554e5ee94f59d38b14f70fd288e8aa3ae077283132b526ceb9dda6d9ab",
+      "signedSnapshot": {
+        "body": {
+          "securityEpoch": "0",
+          "policyId": "policy:test:v1",
+          "policyDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "providerArtifacts": [
+            {
+              "artifactId": "empty-gpu-policy",
+              "provider": "dstack-v1",
+              "mediaType": "application/vnd.dstack.gpu-policy+json;version=1",
+              "canonicalization": "rfc8785-jcs",
+              "content": "e30",
+              "digest": "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o"
+            }
+          ],
+          "trustMaterial": {},
+          "validFromMs": "0",
+          "validUntilMs": "1",
+          "signerKeyId": "test-key-1"
+        },
+        "trustDigest": "BayHVU5e6U9Z04sU9w_SiOiqOuB3KDEytSbOud2m2as",
+        "algorithm": "test-vector",
+        "signature": "AQ"
+      }
+    }
+  ],
+  "rejections": [
+    {
+      "id": "body-key-order-not-wire-format",
+      "reason": "trustDigest is over RFC 8785 JCS body, never input whitespace or key order"
+    },
+    {
+      "id": "trust-digest-mutation",
+      "path": "trustDigest",
+      "value": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "reason": "does not match JCS body digest"
+    },
+    {
+      "id": "artifact-digest-mutation",
+      "path": "body.providerArtifacts[0].digest",
+      "value": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "reason": "does not match decoded artifact content"
+    }
+  ]
+}

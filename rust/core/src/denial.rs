@@ -1,0 +1,73 @@
+use thiserror::Error;
+
+/// Stable, fail-closed BCAP1 denial classes (§10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum Denial {
+    #[error("malformed")]
+    Malformed,
+    #[error("unsupported_version")]
+    UnsupportedVersion,
+    #[error("unsupported_provider")]
+    UnsupportedProvider,
+    #[error("resource_limit")]
+    ResourceLimit,
+    #[error("challenge_unknown")]
+    ChallengeUnknown,
+    #[error("challenge_expired")]
+    ChallengeExpired,
+    #[error("challenge_used")]
+    ChallengeUsed,
+    #[error("binding_mismatch")]
+    BindingMismatch,
+    #[error("subject_mismatch")]
+    SubjectMismatch,
+    #[error("subject_unauthenticated")]
+    SubjectUnauthenticated,
+    #[error("security_epoch_changed")]
+    SecurityEpochChanged,
+    #[error("trust_snapshot_invalid")]
+    TrustSnapshotInvalid,
+    #[error("workload_subject_unbound")]
+    WorkloadSubjectUnbound,
+    #[error("gpu_remote_unbound")]
+    GpuRemoteUnbound,
+    #[error("release_fence_unavailable")]
+    ReleaseFenceUnavailable,
+    #[error("root_untrusted")]
+    RootUntrusted,
+    #[error("endorsements_missing")]
+    EndorsementsMissing,
+    #[error("endorsements_stale")]
+    EndorsementsStale,
+    #[error("signature_invalid")]
+    SignatureInvalid,
+    #[error("revoked")]
+    Revoked,
+    #[error("tcb_disallowed")]
+    TcbDisallowed,
+    #[error("debug_mode")]
+    DebugMode,
+    #[error("measurement_mismatch")]
+    MeasurementMismatch,
+    #[error("component_missing")]
+    ComponentMissing,
+    #[error("component_unbound")]
+    ComponentUnbound,
+    #[error("policy_unknown")]
+    PolicyUnknown,
+    #[error("policy_mismatch")]
+    PolicyMismatch,
+    #[error("lease_used")]
+    LeaseUsed,
+    #[error("consumer_mismatch")]
+    ConsumerMismatch,
+    #[error("recipient_mismatch")]
+    RecipientMismatch,
+    #[error("verifier_unavailable")]
+    VerifierUnavailable,
+    #[error("clock_unavailable")]
+    ClockUnavailable,
+    #[error("internal_error")]
+    InternalError,
+}

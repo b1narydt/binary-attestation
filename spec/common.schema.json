@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binary.dev/bcap1/spec/common.schema.json",
+  "title": "BCAP1 common definitions",
+  "$defs": {
+    "u64Decimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,19})$",
+      "description": "Canonical unsigned-u64 decimal. Implementations MUST additionally reject a value above 18446744073709551615."
+    },
+    "shortString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000]*$",
+      "description": "Must be UTF-8 NFC and at most 1,024 UTF-8 bytes; JSON Schema character limits cannot enforce either condition."
+    },
+    "base64Url": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}|[A-Za-z0-9_-]{3})?$",
+      "description": "Unpadded base64url."
+    },
+    "bytes16": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{22}$"
+    },
+    "bytes32": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "bytes64": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{86}$"
+    },
+    "attestationSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "$ref": "#/$defs/shortString" },
+        "value": { "$ref": "#/$defs/shortString" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "brc100-public-key" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^(?:02|03)[0-9a-f]{64}$",
+                "description": "A valid compressed SEC1 secp256k1 point is additionally required by the subject adapter."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/shortString" }
+    }
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "format": "bcap1-dstack-gpu-policy-jcs-v1",
+  "policies": [
+    {
+      "id": "absent-policy-default",
+      "source": {},
+      "canonicalJcsUtf8": "{}",
+      "digestHex": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "contentBase64Url": "e30",
+      "expectedValid": true
+    },
+    {
+      "id": "explicit-defaults",
+      "source": {
+        "allowDebug": false,
+        "requireConfidentialCompute": true
+      },
+      "canonicalJcsUtf8": "{\"allowDebug\":false,\"requireConfidentialCompute\":true}",
+      "digestHex": "084481d48f19d5ca77fca5566e46444f03010b31cb8a0fd017e216286cccf48c",
+      "contentBase64Url": "eyJhbGxvd0RlYnVnIjpmYWxzZSwicmVxdWlyZUNvbmZpZGVudGlhbENvbXB1dGUiOnRydWV9",
+      "expectedValid": true
+    },
+    {
+      "id": "rego-policy",
+      "source": {
+        "rego": "package gpu\ndefault allow = false\nallow { input.cc_mode == \"on\" }"
+      },
+      "canonicalJcsUtf8": "{\"rego\":\"package gpu\\ndefault allow = false\\nallow { input.cc_mode == \\\"on\\\" }\"}",
+      "digestHex": "4a6a177968083f0240fefda1436ab1670bba186d378fd63489001907fcdbd594",
+      "contentBase64Url": "eyJyZWdvIjoicGFja2FnZSBncHVcbmRlZmF1bHQgYWxsb3cgPSBmYWxzZVxuYWxsb3cgeyBpbnB1dC5jY19tb2RlID09IFwib25cIiB9In0",
+      "expectedValid": true
+    },
+    {
+      "id": "unknown-field",
+      "source": {
+        "unknownField": true
+      },
+      "canonicalJcsUtf8": "{\"unknownField\":true}",
+      "digestHex": "2a534c01863e52d96a8b7bfa37560f4f591b717a223dfadf1ff16ae33694f6a1",
+      "contentBase64Url": "eyJ1bmtub3duRmllbGQiOnRydWV9",
+      "expectedValid": false
+    }
+  ],
+  "eventOrder": {
+    "profile": "dstack-tdx-rtmr3-nvidia-boottime-v1",
+    "valid": [
+      {
+        "id": "zero-init-no-os-image",
+        "events": [
+          "compose-hash",
+          "gpu-policy-hash",
+          "instance-id",
+          "boot-mr-done",
+          "gpu-attestation",
+          "key-provider"
+        ]
+      },
+      {
+        "id": "ordered-init-and-os-image",
+        "events": [
+          "compose-hash",
+          "init-script-hash",
+          "init-script-hash",
+          "gpu-policy-hash",
+          "instance-id",
+          "boot-mr-done",
+          "os-image-hash",
+          "gpu-attestation",
+          "key-provider"
+        ]
+      }
+    ],
+    "rejected": [
+      {
+        "id": "missing-gpu-policy",
+        "events": [
+          "compose-hash",
+          "instance-id",
+          "boot-mr-done",
+          "gpu-attestation",
+          "key-provider"
+        ]
+      },
+      {
+        "id": "duplicate-gpu-attestation",
+        "events": [
+          "compose-hash",
+          "gpu-policy-hash",
+          "instance-id",
+          "boot-mr-done",
+          "gpu-attestation",
+          "gpu-attestation",
+          "key-provider"
+        ]
+      },
+      {
+        "id": "reordered-key-provider",
+        "events": [
+          "compose-hash",
+          "gpu-policy-hash",
+          "instance-id",
+          "boot-mr-done",
+          "key-provider",
+          "gpu-attestation"
+        ]
+      }
+    ]
+  }
+}

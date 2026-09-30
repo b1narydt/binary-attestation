@@ -1,0 +1,118 @@
+{
+  "format": "bcap1-transport-v1",
+  "valid": [
+    {
+      "id": "challenge-jcs",
+      "payloadType": "challenge",
+      "payloadJcsUtf8": "{\"audience\":\"@udience\",\"challengeId\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"context\":\"bontext\",\"contextDigest\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"expiresAtMs\":\"2\",\"issuedAtMs\":\"0\",\"nonce\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"policyDigest\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"policyId\":\"qolicy\",\"protocolVersion\":1,\"securityEpoch\":\"0\",\"subject\":{\"type\":\"did\",\"value\":\"@lice\"},\"trustDigest\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}",
+      "payloadDigestHex": "0e096ff47476f940dd95511dfd116baaf376de43c0a6772b14819ee1855d7c35",
+      "authenticatedPeer": {
+        "type": "did",
+        "value": "rp"
+      },
+      "authenticatedLocalSubject": {
+        "type": "did",
+        "value": "@lice"
+      },
+      "message": {
+        "protocolVersion": 1,
+        "messageType": "challenge",
+        "messageId": "AAECAwQFBgcICQoLDA0ODw",
+        "sender": {
+          "type": "did",
+          "value": "rp"
+        },
+        "recipient": {
+          "type": "did",
+          "value": "@lice"
+        },
+        "contextDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "payloadEncoding": "rfc8785-jcs",
+        "payload": "eyJhdWRpZW5jZSI6IkB1ZGllbmNlIiwiY2hhbGxlbmdlSWQiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiY29udGV4dCI6ImJvbnRleHQiLCJjb250ZXh0RGlnZXN0IjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdE1zIjoiMiIsImlzc3VlZEF0TXMiOiIwIiwibm9uY2UiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicG9saWN5RGlnZXN0IjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBvbGljeUlkIjoicW9saWN5IiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzZWN1cml0eUVwb2NoIjoiMCIsInN1YmplY3QiOnsidHlwZSI6ImRpZCIsInZhbHVlIjoiQGxpY2UifSwidHJ1c3REaWdlc3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIn0",
+        "payloadDigest": "Dglv9HR2-UDdlVEd_RFrqvN23kPApncrFIGe4YVdfDU"
+      }
+    },
+    {
+      "id": "evidence-jcs",
+      "payloadType": "evidence",
+      "payloadJcsUtf8": "{\"challengeId\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"components\":[{\"componentId\":\"cpu\",\"evidence\":\"AQ\",\"mediaType\":\"application/test\",\"provider\":\"test-v1\"}],\"protocolVersion\":1,\"subject\":{\"type\":\"did\",\"value\":\"@lice\"}}",
+      "payloadDigestHex": "41ead0a5be4f629b2db2060ecd3c54f83b42d701aae731a168341328aca728f7",
+      "authenticatedPeer": {
+        "type": "did",
+        "value": "@lice"
+      },
+      "authenticatedLocalSubject": {
+        "type": "did",
+        "value": "rp"
+      },
+      "message": {
+        "protocolVersion": 1,
+        "messageType": "evidence",
+        "messageId": "EBESExQVFhcYGRobHB0eHw",
+        "sender": {
+          "type": "did",
+          "value": "@lice"
+        },
+        "recipient": {
+          "type": "did",
+          "value": "rp"
+        },
+        "contextDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "payloadEncoding": "rfc8785-jcs",
+        "payload": "eyJjaGFsbGVuZ2VJZCI6IkFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJjb21wb25lbnRzIjpbeyJjb21wb25lbnRJZCI6ImNwdSIsImV2aWRlbmNlIjoiQVEiLCJtZWRpYVR5cGUiOiJhcHBsaWNhdGlvbi90ZXN0IiwicHJvdmlkZXIiOiJ0ZXN0LXYxIn1dLCJwcm90b2NvbFZlcnNpb24iOjEsInN1YmplY3QiOnsidHlwZSI6ImRpZCIsInZhbHVlIjoiQGxpY2UifX0",
+        "payloadDigest": "QerQpb5PYpstsgYOzTxU-DtC1wGq5zGhaDQTKKynKPc"
+      }
+    }
+  ],
+  "rejections": [
+    {
+      "id": "sender-mutation",
+      "base": "challenge-jcs",
+      "path": "sender.value",
+      "value": "mallory",
+      "reason": "authenticated peer and sender must remain equal"
+    },
+    {
+      "id": "recipient-mutation",
+      "base": "challenge-jcs",
+      "path": "recipient.value",
+      "value": "other-rp",
+      "reason": "authenticated local identity and recipient must remain equal"
+    },
+    {
+      "id": "context-mutation",
+      "base": "challenge-jcs",
+      "path": "contextDigest",
+      "value": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "reason": "envelope context must match typed body or stored challenge"
+    },
+    {
+      "id": "message-id-mutation",
+      "base": "challenge-jcs",
+      "path": "messageId",
+      "value": "AQECAwQFBgcICQoLDA0ODw",
+      "reason": "logical retry reuses the message ID; a changed ID is a distinct message"
+    },
+    {
+      "id": "payload-mutation",
+      "base": "challenge-jcs",
+      "path": "payload",
+      "value": "eyJhdWRpZW5jZSI6IkB1ZGllbmNlIiwiY2hhbGxlbmdlSWQiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiY29udGV4dCI6ImJvbnRleHQiLCJjb250ZXh0RGlnZXN0IjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdE1zIjoiMiIsImlzc3VlZEF0TXMiOiIwIiwibm9uY2UiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicG9saWN5RGlnZXN0IjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBvbGljeUlkIjoicW9saWN5IiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzZWN1cml0eUVwb2NoIjoiMCIsInN1YmplY3QiOnsidHlwZSI6ImRpZCIsInZhbHVlIjoiQGxpY2UifSwidHJ1c3REaWdlc3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBInB",
+      "reason": "payloadDigest no longer matches exact decoded payload"
+    },
+    {
+      "id": "payload-digest-mutation",
+      "base": "challenge-jcs",
+      "path": "payloadDigest",
+      "value": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "reason": "payloadDigest must equal SHA-256(decoded payload)"
+    },
+    {
+      "id": "payload-encoding-mutation",
+      "base": "challenge-jcs",
+      "path": "payloadEncoding",
+      "value": "json",
+      "reason": "only rfc8785-jcs is accepted"
+    }
+  ]
+}

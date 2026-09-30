@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binary.dev/bcap1/spec/security-snapshot.schema.json",
+  "title": "BCAP1 SignedSecuritySnapshotV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["body", "trustDigest", "algorithm", "signature"],
+  "properties": {
+    "body": { "$ref": "#/$defs/body" },
+    "trustDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "algorithm": { "$ref": "common.schema.json#/$defs/shortString" },
+    "signature": { "$ref": "common.schema.json#/$defs/base64Url" }
+  },
+  "$defs": {
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["securityEpoch", "policyId", "policyDigest", "providerArtifacts", "trustMaterial", "validFromMs", "validUntilMs", "signerKeyId"],
+      "properties": {
+        "securityEpoch": { "$ref": "common.schema.json#/$defs/u64Decimal" },
+        "policyId": { "$ref": "common.schema.json#/$defs/shortString" },
+        "policyDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+        "providerArtifacts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/providerArtifact" }
+        },
+        "trustMaterial": {
+          "type": "object",
+          "description": "Schema-owned provider-root, pin, collateral and verifier-key subdocuments. This open record is intentionally the extension boundary; each selected provider profile validates its value before trust use."
+        },
+        "validFromMs": { "$ref": "common.schema.json#/$defs/u64Decimal" },
+        "validUntilMs": { "$ref": "common.schema.json#/$defs/u64Decimal" },
+        "signerKeyId": { "$ref": "common.schema.json#/$defs/shortString" }
+      }
+    },
+    "providerArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "provider", "mediaType", "canonicalization", "content", "digest"],
+      "properties": {
+        "artifactId": { "$ref": "common.schema.json#/$defs/shortString" },
+        "provider": { "$ref": "common.schema.json#/$defs/shortString" },
+        "mediaType": { "$ref": "common.schema.json#/$defs/shortString" },
+        "canonicalization": { "$ref": "common.schema.json#/$defs/shortString" },
+        "content": { "$ref": "common.schema.json#/$defs/base64Url" },
+        "digest": { "$ref": "common.schema.json#/$defs/bytes32" }
+      }
+    }
+  },
+  "x-bcap1-validation": ["trustDigest is SHA-256(RFC 8785 JCS(body))", "each artifact digest is SHA-256(decoded content)", "validFromMs < validUntilMs", "all strings are UTF-8 NFC and their UTF-8 length is at most 1,024 bytes"]
+}

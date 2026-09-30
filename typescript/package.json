@@ -1,0 +1,42 @@
+{
+  "name": "@binary/attestation",
+  "version": "0.1.0",
+  "description": "Browser-safe portable core for Binary Confidential Attestation Protocol v1",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "../spec",
+    "../vectors"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "format:check": "prettier --check src test package.json tsconfig.json tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.6",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/b1narydt/binary-attestation.git"
+  }
+}

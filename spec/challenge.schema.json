@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binary.dev/bcap1/spec/challenge.schema.json",
+  "title": "BCAP1 AttestationChallengeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "challengeId", "nonce", "subject", "audience", "context", "contextDigest", "policyId", "policyDigest", "securityEpoch", "trustDigest", "issuedAtMs", "expiresAtMs"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "challengeId": { "$ref": "common.schema.json#/$defs/bytes16" },
+    "nonce": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "subject": { "$ref": "common.schema.json#/$defs/attestationSubject" },
+    "audience": { "$ref": "common.schema.json#/$defs/shortString" },
+    "context": { "$ref": "common.schema.json#/$defs/shortString" },
+    "contextDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "policyId": { "$ref": "common.schema.json#/$defs/shortString" },
+    "policyDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "securityEpoch": { "$ref": "common.schema.json#/$defs/u64Decimal" },
+    "trustDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "issuedAtMs": { "$ref": "common.schema.json#/$defs/u64Decimal" },
+    "expiresAtMs": { "$ref": "common.schema.json#/$defs/u64Decimal" }
+  },
+  "x-bcap1-validation": ["issuedAtMs < expiresAtMs", "TTL is deployment-bounded (hard maximum 300 seconds)", "all strings are UTF-8 NFC and their UTF-8 length is at most 1,024 bytes"]
+}

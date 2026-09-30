@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binary.dev/bcap1/spec/transport-message.schema.json",
+  "title": "BCAP1 BCAP1TransportMessageV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "messageType", "messageId", "sender", "recipient", "contextDigest", "payloadEncoding", "payload", "payloadDigest"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "messageType": { "enum": ["challenge", "evidence"] },
+    "messageId": { "$ref": "common.schema.json#/$defs/bytes16" },
+    "sender": { "$ref": "common.schema.json#/$defs/attestationSubject" },
+    "recipient": { "$ref": "common.schema.json#/$defs/attestationSubject" },
+    "contextDigest": { "$ref": "common.schema.json#/$defs/bytes32" },
+    "payloadEncoding": { "const": "rfc8785-jcs" },
+    "payload": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/base64Url" },
+        { "type": "string", "maxLength": 22369622 }
+      ],
+      "description": "Exact JCS bytes, at most 16 MiB after decoding."
+    },
+    "payloadDigest": { "$ref": "common.schema.json#/$defs/bytes32" }
+  },
+  "x-bcap1-validation": ["payloadDigest is SHA-256(decoded payload)", "the decoded payload validates as the typed closed schema", "authenticated peer equals sender", "authenticated local subject equals recipient", "body recipient and contextDigest match this envelope"]
+}

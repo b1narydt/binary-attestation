@@ -721,7 +721,7 @@ impl EvidenceVerifier for CountingVerifier {
 }
 
 #[test]
-fn graph_and_plugin_preflight_precede_every_provider_call() {
+fn graph_and_plugin_preflight_precede_claim_and_every_provider_call() {
     type Mutate = fn(&mut EvidenceBundle);
     let cases: [(&str, Mutate, Denial); 4] = [
         (
@@ -792,6 +792,15 @@ fn graph_and_plugin_preflight_precede_every_provider_call() {
         });
         assert_eq!(result.map(|_| ()), Err(expected), "{name}");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "{name}: provider ran");
+        // Refused before the claim (spec §7 step 1 precedes step 3): the
+        // relying party's challenge is still usable by a well-formed bundle.
+        verifier
+            .verify(VerificationInput {
+                authenticated_subject: &challenge.subject,
+                bundle: &bundle(&challenge, true),
+                transport_context_digest: &challenge.context_digest,
+            })
+            .unwrap_or_else(|denial| panic!("{name}: challenge was burned: {denial:?}"));
     }
     // Control: the same harness reaches the provider for a valid bundle.
     let clock = Arc::new(ManualClock::default());

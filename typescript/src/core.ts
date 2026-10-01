@@ -1,4 +1,9 @@
-import { verifyBundleComponents, validateEvidenceBundle, VerifierRegistry } from './bundle.js';
+import {
+  resolveBundlePlugins,
+  verifyBundleComponents,
+  validateEvidenceBundle,
+  VerifierRegistry,
+} from './bundle.js';
 import {
   bindingDigest,
   decimalNow,
@@ -340,6 +345,9 @@ export class AttestationCore {
       const bundle = validateEvidenceBundle(input.bundle);
       const now = this.now();
       const authenticatedSubject = validateSubject(input.authenticatedSubject);
+      // Spec §7 step 1: an unregistered plugin is refused before the claim,
+      // so it can neither burn the challenge nor reach any plugin.
+      resolveBundlePlugins(bundle, this.registry);
       const challenge = this.challenges.claim(
         bundle.challengeId,
         authenticatedSubject,

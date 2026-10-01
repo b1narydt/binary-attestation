@@ -240,6 +240,31 @@ export class VerifierRegistry {
   }
 }
 
+/**
+ * Resolves every provider and relation plugin a validated bundle names, index-
+ * aligned with its components and edges. Spec §7 step 1 (provider allowlist)
+ * precedes the challenge claim, so callers run this before claiming and before
+ * any plugin receives attacker input.
+ */
+export function resolveBundlePlugins(
+  bundle: EvidenceBundleV1,
+  registry: VerifierRegistry,
+): { providers: EvidenceVerifier[]; relations: BindingRelationVerifier[] } {
+  const providers = bundle.components.map((component) => {
+    const verifier = registry.provider(component.provider);
+    if (verifier === undefined)
+      throw new Denial('unsupported_provider', `no local verifier for ${component.provider}`);
+    return verifier;
+  });
+  const relations = (bundle.bindingEdges ?? []).map((edge) => {
+    const verifier = registry.relation(edge.relation);
+    if (verifier === undefined)
+      throw new Denial('unsupported_provider', `no relation verifier for ${edge.relation}`);
+    return verifier;
+  });
+  return { providers, relations };
+}
+
 /** Verifies component plugins and that every component has a direct or registered-edge path to the BCAP1 digest. */
 export async function verifyBundleComponents(input: {
   challenge: AttestationChallengeV1;
@@ -253,20 +278,7 @@ export async function verifyBundleComponents(input: {
   // the complete bundle before any provider plugin receives attacker input.
   const bundle = validateEvidenceBundle(input.bundle);
   const expected = bindingDigest(challenge);
-  // Preflight: every provider and relation plugin the bundle names must be
-  // registered before any plugin receives attacker input.
-  const providers = bundle.components.map((component) => {
-    const verifier = registry.provider(component.provider);
-    if (verifier === undefined)
-      throw new Denial('unsupported_provider', `no local verifier for ${component.provider}`);
-    return verifier;
-  });
-  const relations = (bundle.bindingEdges ?? []).map((edge) => {
-    const verifier = registry.relation(edge.relation);
-    if (verifier === undefined)
-      throw new Denial('unsupported_provider', `no relation verifier for ${edge.relation}`);
-    return verifier;
-  });
+  const { providers, relations } = resolveBundlePlugins(bundle, registry);
   const verified: VerifiedComponentV1[] = [];
   for (const [index, component] of bundle.components.entries()) {
     const verifier = providers[index]!;

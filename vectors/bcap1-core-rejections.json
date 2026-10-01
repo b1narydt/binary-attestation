@@ -51,40 +51,6 @@
       "denial": "malformed"
     },
     {
-      "id": "self-edge",
-      "componentIds": ["root", "child"],
-      "edges": [
-        {
-          "parentComponentId": "root",
-          "childComponentId": "root",
-          "relation": "relation-a"
-        }
-      ],
-      "denial": "malformed"
-    },
-    {
-      "id": "edge-cycle",
-      "componentIds": ["root", "child", "grandchild"],
-      "edges": [
-        {
-          "parentComponentId": "root",
-          "childComponentId": "child",
-          "relation": "relation-a"
-        },
-        {
-          "parentComponentId": "child",
-          "childComponentId": "grandchild",
-          "relation": "relation-a"
-        },
-        {
-          "parentComponentId": "grandchild",
-          "childComponentId": "root",
-          "relation": "relation-a"
-        }
-      ],
-      "denial": "malformed"
-    },
-    {
       "id": "metadata-entry-limit",
       "componentIds": ["root"],
       "edges": [],

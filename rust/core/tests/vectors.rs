@@ -207,62 +207,131 @@ fn core_rejection_vectors_refuse_duplicate_edges_and_invalid_unicode() {
             unicode["id"]
         );
     }
-    for rejection in vectors["bundleRejections"]
-        .as_array()
-        .expect("bundleRejections")
-    {
-        let evidence_bytes = rejection["evidenceBytesPerComponent"]
-            .as_u64()
-            .map_or(1, |value| usize::try_from(value).expect("usize"));
-        let metadata_entries = rejection["metadataEntries"]
-            .as_u64()
-            .map_or(0, |value| usize::try_from(value).expect("usize"));
-        let components = rejection["componentIds"]
-            .as_array()
-            .expect("component ids")
-            .iter()
-            .enumerate()
-            .map(|(index, id)| EvidenceComponent {
-                component_id: id.as_str().expect("component id").to_owned(),
-                provider: "fixture-v1".into(),
-                media_type: "application/fixture".into(),
-                evidence: B64Url::from_bytes(&vec![1; evidence_bytes]),
-                endorsements: None,
-                untrusted_metadata: (index == 0 && metadata_entries > 0).then(|| {
-                    (0..metadata_entries)
-                        .map(|entry| (format!("key-{entry}"), "value".to_owned()))
-                        .collect::<BTreeMap<_, _>>()
-                }),
-            })
-            .collect();
-        let edges = rejection["edges"]
-            .as_array()
-            .expect("edges")
-            .iter()
-            .map(|edge| EvidenceBindingEdge {
-                parent_component_id: edge["parentComponentId"]
-                    .as_str()
-                    .expect("parent")
-                    .to_owned(),
-                child_component_id: edge["childComponentId"].as_str().expect("child").to_owned(),
-                relation: edge["relation"].as_str().expect("relation").to_owned(),
-                evidence: None,
-            });
-        let bundle = EvidenceBundle {
-            protocol_version: 1,
-            challenge_id: B64Url::from_bytes(&[0; 16]),
-            subject: AttestationSubject {
-                kind: "did".into(),
-                value: "peer".into(),
-            },
-            components,
-            binding_edges: Some(edges.collect()),
-        };
+    assert_bundle_rejections(&vectors["bundleRejections"]);
+}
+
+#[test]
+fn graph_rejection_vectors_refuse_self_edges_and_cycles() {
+    let vectors: Value =
+        serde_json::from_str(include_str!("../../../vectors/bcap1-graph-rejections.json"))
+            .expect("vectors");
+    assert_eq!(
+        vectors["format"].as_str(),
+        Some("bcap1-graph-rejections-v1")
+    );
+    assert_bundle_rejections(&vectors["bundleRejections"]);
+}
+
+#[test]
+fn bundle_precedence_vectors_pick_the_shared_denial() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../vectors/bcap1-bundle-precedence.json"
+    ))
+    .expect("vectors");
+    assert_eq!(
+        vectors["format"].as_str(),
+        Some("bcap1-bundle-precedence-v1")
+    );
+    assert_bundle_rejections(&vectors["cases"]);
+}
+
+fn assert_bundle_rejections(cases: &Value) {
+    for rejection in cases.as_array().expect("bundle rejection cases") {
         let expected = match rejection["denial"].as_str() {
             Some("malformed") => Denial::Malformed,
             Some("resource_limit") => Denial::ResourceLimit,
+            Some("unsupported_version") => Denial::UnsupportedVersion,
             value => panic!("unsupported denial vector {value:?}"),
         };
-        assert_eq!(bundle.validate(), Err(expected), "{}", rejection["id"]);
+        assert_eq!(
+            vector_bundle(rejection).validate(),
+            Err(expected),
+            "{}",
+            rejection["id"]
+        );
+    }
+}
+
+fn usize_field(value: &Value) -> Option<usize> {
+    value
+        .as_u64()
+        .map(|value| usize::try_from(value).expect("usize"))
+}
+
+/// Builds the bundle a rejection/precedence vector describes. Mirrors the
+/// TypeScript builder in `typescript/test/core.test.ts`.
+fn vector_bundle(rejection: &Value) -> EvidenceBundle {
+    let evidence_bytes = usize_field(&rejection["evidenceBytesPerComponent"]).unwrap_or(1);
+    let metadata_entries = usize_field(&rejection["metadataEntries"]).unwrap_or(0);
+    let mut components: Vec<EvidenceComponent> = rejection["componentIds"]
+        .as_array()
+        .expect("component ids")
+        .iter()
+        .enumerate()
+        .map(|(index, id)| EvidenceComponent {
+            component_id: id.as_str().expect("component id").to_owned(),
+            provider: "fixture-v1".into(),
+            media_type: "application/fixture".into(),
+            evidence: B64Url::from_bytes(&vec![1; evidence_bytes]),
+            endorsements: None,
+            untrusted_metadata: (index == 0 && metadata_entries > 0).then(|| {
+                (0..metadata_entries)
+                    .map(|entry| (format!("key-{entry}"), "value".to_owned()))
+                    .collect::<BTreeMap<_, _>>()
+            }),
+        })
+        .collect();
+    for change in rejection["componentOverrides"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let component = &mut components[usize_field(&change["index"]).expect("index")];
+        if let Some(media_type) = change["mediaType"].as_str() {
+            component.media_type = media_type.to_owned();
+        }
+        if let Some(bytes) = usize_field(&change["evidenceBytes"]) {
+            component.evidence = B64Url::from_bytes(&vec![1; bytes]);
+        }
+        if let Some(key) = change["metadataKey"].as_str() {
+            component.untrusted_metadata =
+                Some(BTreeMap::from([(key.to_owned(), "value".to_owned())]));
+        }
+    }
+    let mut edges: Vec<EvidenceBindingEdge> = rejection["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .map(|edge| EvidenceBindingEdge {
+            parent_component_id: edge["parentComponentId"]
+                .as_str()
+                .expect("parent")
+                .to_owned(),
+            child_component_id: edge["childComponentId"].as_str().expect("child").to_owned(),
+            relation: edge["relation"].as_str().expect("relation").to_owned(),
+            evidence: usize_field(&edge["evidenceBytes"])
+                .map(|bytes| B64Url::from_bytes(&vec![1; bytes])),
+        })
+        .collect();
+    for _ in 0..usize_field(&rejection["generatedEdges"]).unwrap_or(0) {
+        edges.push(EvidenceBindingEdge {
+            parent_component_id: "generated-parent".into(),
+            child_component_id: "generated-child".into(),
+            relation: "relation-a".into(),
+            evidence: None,
+        });
+    }
+    let subject = &rejection["subject"];
+    EvidenceBundle {
+        protocol_version: rejection["protocolVersion"]
+            .as_u64()
+            .map_or(1, |version| u8::try_from(version).expect("u8")),
+        challenge_id: B64Url::from_bytes(&[0; 16]),
+        subject: AttestationSubject {
+            kind: subject["type"].as_str().unwrap_or("did").into(),
+            value: subject["value"].as_str().unwrap_or("peer").into(),
+        },
+        components,
+        binding_edges: Some(edges),
     }
 }

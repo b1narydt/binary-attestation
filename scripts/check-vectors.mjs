@@ -374,7 +374,36 @@ function verifyCoreRejections(vector) {
     }
     if (accepted) fail(`${testCase.id} was accepted as UTF-8 scalar text`);
   }
-  for (const testCase of vector.bundleRejections) {
+  verifyBundleRejections(vector.bundleRejections);
+}
+
+function verifyGraphRejections(vector) {
+  equal(vector.format, 'bcap1-graph-rejections-v1', 'graph-rejection vector format');
+  if (!Array.isArray(vector.bundleRejections) || vector.bundleRejections.length === 0)
+    fail('graph rejection vectors are empty');
+  verifyBundleRejections(vector.bundleRejections);
+}
+
+const PRECEDENCE_DENIALS = new Set(['malformed', 'resource_limit', 'unsupported_version']);
+
+function verifyBundlePrecedence(vector) {
+  equal(vector.format, 'bcap1-bundle-precedence-v1', 'bundle-precedence vector format');
+  if (!Array.isArray(vector.cases) || vector.cases.length === 0)
+    fail('bundle precedence vectors are empty');
+  const ids = new Set();
+  for (const testCase of vector.cases) {
+    if (!testCase.id || ids.has(testCase.id)) fail('bundle precedence case id is missing or reused');
+    ids.add(testCase.id);
+    if (!PRECEDENCE_DENIALS.has(testCase.denial)) fail(`${testCase.id} has an invalid denial`);
+    if (!Array.isArray(testCase.defects) || testCase.defects.length === 0)
+      fail(`${testCase.id} does not name its defects`);
+    if (!Array.isArray(testCase.componentIds) || !Array.isArray(testCase.edges))
+      fail(`${testCase.id} is incomplete`);
+  }
+}
+
+function verifyBundleRejections(cases) {
+  for (const testCase of cases) {
     if (testCase.denial !== 'malformed' && testCase.denial !== 'resource_limit')
       fail(`${testCase.id} has an invalid denial`);
     const ids = new Set();
@@ -523,6 +552,8 @@ async function main() {
   verifySnapshot(snapshot);
   verifyGpuPolicy(gpuPolicy);
   verifyCoreRejections(coreRejections);
+  verifyGraphRejections(await readJson(vectorsDir, 'bcap1-graph-rejections.json'));
+  verifyBundlePrecedence(await readJson(vectorsDir, 'bcap1-bundle-precedence.json'));
   const rejections = await readJson(vectorsDir, 'bcap1-validation-rejections.json');
   equal(rejections.format, 'bcap1-schema-rejections-v1', 'schema-rejection vector format');
   if (!Array.isArray(rejections.cases) || rejections.cases.length === 0)

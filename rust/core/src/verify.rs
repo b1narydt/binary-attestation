@@ -7,8 +7,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AttestationSubject, B64Url, BindingRelationVerifier, Challenge, ChallengeStore, Clock, Denial,
-    EvidenceBundle, PolicyEvaluator, ProviderRegistry, RelationRegistry, SecuritySnapshotStore,
-    SignedSecuritySnapshot, VerifiedClaims, VerifiedComponent, constant_time_eq,
+    EvidenceBundle, EvidenceVerifier, PolicyEvaluator, ProviderRegistry, RelationRegistry,
+    SecuritySnapshotStore, SignedSecuritySnapshot, VerifiedClaims, VerifiedComponent,
+    constant_time_eq,
 };
 
 /// Input supplied by an authenticated channel adapter.  `transport_context_digest`
@@ -20,6 +21,13 @@ pub struct VerificationInput<'a> {
     /// The envelope context supplied by an authenticated BCAP1 transport.
     /// Direct adapters pass the locally stored challenge's context explicitly.
     pub transport_context_digest: &'a B64Url,
+}
+
+/// Plugins resolved for one bundle, index-aligned with its components and
+/// binding edges.
+struct Plugins {
+    providers: Vec<Arc<dyn EvidenceVerifier>>,
+    relations: Vec<Arc<dyn BindingRelationVerifier>>,
 }
 
 pub struct CoreVerifier {
@@ -82,6 +90,11 @@ impl CoreVerifier {
     ) -> Result<VerifiedClaims, Denial> {
         input.bundle.validate()?;
         input.authenticated_subject.validate()?;
+        // Spec §7 step 1 (provider allowlist) precedes step 3 (claim): every
+        // provider and relation plugin the bundle names is resolved before the
+        // challenge is claimed, so naming an unregistered plugin neither burns
+        // the relying party's challenge nor reaches any plugin.
+        let plugins = self.resolve_plugins(input.bundle)?;
         let challenge = self.challenges.begin(
             input.bundle.challenge_id.as_str(),
             input.authenticated_subject,
@@ -104,7 +117,7 @@ impl CoreVerifier {
                 };
             }
         };
-        let result = self.verify_claimed(&challenge, input, now_ms);
+        let result = self.verify_claimed(&challenge, input, plugins, now_ms);
         match result {
             Ok(claims) => {
                 // Commit at the shared epoch fence first. It obtains trusted
@@ -161,10 +174,28 @@ impl CoreVerifier {
         }
     }
 
+    fn resolve_plugins(&self, bundle: &EvidenceBundle) -> Result<Plugins, Denial> {
+        Ok(Plugins {
+            providers: bundle
+                .components
+                .iter()
+                .map(|component| self.providers.get(&component.provider))
+                .collect::<Result<_, _>>()?,
+            relations: bundle
+                .binding_edges
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|edge| self.relations.get(&edge.relation))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+
     fn verify_claimed(
         &self,
         challenge: &Challenge,
         input: VerificationInput<'_>,
+        plugins: Plugins,
         now_ms: u64,
     ) -> Result<VerifiedClaims, Denial> {
         if input.transport_context_digest != &challenge.context_digest {
@@ -172,23 +203,10 @@ impl CoreVerifier {
         }
         let snapshot = self.current_matching_snapshot(challenge, now_ms)?;
         let expected_binding = challenge.binding_digest()?;
-        // Preflight: every provider and relation plugin the bundle names must
-        // be registered before any plugin receives attacker input. Graph shape
-        // was already checked by `EvidenceBundle::validate`.
-        let providers = input
-            .bundle
-            .components
-            .iter()
-            .map(|component| self.providers.get(&component.provider))
-            .collect::<Result<Vec<_>, _>>()?;
-        let relations = input
-            .bundle
-            .binding_edges
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .map(|edge| self.relations.get(&edge.relation))
-            .collect::<Result<Vec<_>, _>>()?;
+        let Plugins {
+            providers,
+            relations,
+        } = plugins;
         let mut verified = Vec::with_capacity(input.bundle.components.len());
         for (component, verifier) in input.bundle.components.iter().zip(providers) {
             let output = verifier.verify(component, expected_binding, now_ms)?;

@@ -1,0 +1,253 @@
+{
+  "format": "bcap1-bundle-precedence-v1",
+  "description": "Bundles with more than one defect. Validation runs in a fixed phase order (version, component/edge counts, aggregate byte budget, each component in array order: text fields, metadata text, size limits; duplicate component ids; each edge's own fields; edge endpoints; graph shape; subject and challenge id), so every implementation must return the listed denial.",
+  "cases": [
+    {
+      "id": "unsupported-version-beats-component-limit",
+      "protocolVersion": 2,
+      "componentIds": [
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8",
+        "c9",
+        "c10",
+        "c11",
+        "c12",
+        "c13",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32"
+      ],
+      "edges": [],
+      "defects": [
+        "protocolVersion",
+        "componentCount"
+      ],
+      "denial": "unsupported_version"
+    },
+    {
+      "id": "empty-components",
+      "componentIds": [],
+      "edges": [],
+      "defects": [
+        "componentCount"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "component-limit-beats-invalid-subject",
+      "componentIds": [
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8",
+        "c9",
+        "c10",
+        "c11",
+        "c12",
+        "c13",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32"
+      ],
+      "edges": [],
+      "subject": {
+        "type": "did",
+        "value": ""
+      },
+      "defects": [
+        "componentCount",
+        "subject"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "edge-limit-beats-invalid-component-id",
+      "componentIds": [
+        ""
+      ],
+      "edges": [],
+      "generatedEdges": 65,
+      "defects": [
+        "edgeCount",
+        "componentId"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "bundle-budget-beats-invalid-media-type",
+      "componentIds": [
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "edges": [],
+      "evidenceBytesPerComponent": 2097152,
+      "metadataEntries": 1,
+      "componentOverrides": [
+        {
+          "index": 7,
+          "mediaType": ""
+        }
+      ],
+      "defects": [
+        "bundleBytes",
+        "mediaType"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "component-text-beats-evidence-size",
+      "componentIds": [
+        "root"
+      ],
+      "edges": [],
+      "componentOverrides": [
+        {
+          "index": 0,
+          "mediaType": "",
+          "evidenceBytes": 2097153
+        }
+      ],
+      "defects": [
+        "mediaType",
+        "evidenceBytes"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "metadata-text-beats-evidence-size",
+      "componentIds": [
+        "root"
+      ],
+      "edges": [],
+      "componentOverrides": [
+        {
+          "index": 0,
+          "metadataKey": "",
+          "evidenceBytes": 2097153
+        }
+      ],
+      "defects": [
+        "metadataKey",
+        "evidenceBytes"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "earlier-component-size-beats-later-text",
+      "componentIds": [
+        "a",
+        "b"
+      ],
+      "edges": [],
+      "componentOverrides": [
+        {
+          "index": 0,
+          "evidenceBytes": 2097153
+        },
+        {
+          "index": 1,
+          "mediaType": ""
+        }
+      ],
+      "defects": [
+        "evidenceBytes",
+        "mediaType"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "edge-evidence-size-beats-earlier-dangling-edge",
+      "componentIds": [
+        "a",
+        "b"
+      ],
+      "edges": [
+        {
+          "parentComponentId": "missing",
+          "childComponentId": "a",
+          "relation": "relation-a"
+        },
+        {
+          "parentComponentId": "a",
+          "childComponentId": "b",
+          "relation": "relation-a",
+          "evidenceBytes": 2097153
+        }
+      ],
+      "defects": [
+        "danglingEdge",
+        "edgeEvidenceBytes"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "duplicate-component-beats-invalid-edge-field",
+      "componentIds": [
+        "a",
+        "a"
+      ],
+      "edges": [
+        {
+          "parentComponentId": "a",
+          "childComponentId": "a",
+          "relation": ""
+        }
+      ],
+      "defects": [
+        "duplicateComponent",
+        "relation"
+      ],
+      "denial": "malformed"
+    }
+  ]
+}

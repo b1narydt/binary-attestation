@@ -355,9 +355,22 @@ pub struct EvidenceComponent {
 }
 
 impl EvidenceComponent {
+    /// Per-component checks in the order TypeScript's `validateComponent`
+    /// applies them: text fields, metadata text, then size limits. The order
+    /// decides the denial for a component with more than one defect, so it is
+    /// part of the cross-language contract.
     pub fn validate(&self) -> Result<(), Denial> {
         for value in [&self.component_id, &self.provider, &self.media_type] {
             validate_text(value)?;
+        }
+        if let Some(metadata) = &self.untrusted_metadata {
+            if metadata.len() > MAX_UNTRUSTED_METADATA_ENTRIES {
+                return Err(Denial::ResourceLimit);
+            }
+            for (key, value) in metadata {
+                validate_text(key)?;
+                validate_text(value)?;
+            }
         }
         if self.evidence.decoded_len() > MAX_COMPONENT_EVIDENCE
             || self
@@ -367,14 +380,13 @@ impl EvidenceComponent {
         {
             return Err(Denial::ResourceLimit);
         }
-        self.untrusted_metadata_budget()?;
         Ok(())
     }
 
-    /// Charges the exact JSON string bytes for untrusted metadata before any
-    /// provider work. Rust and TypeScript use the same quote/escape accounting
-    /// so the 16 MiB decision cannot diverge across implementations.
-    fn untrusted_metadata_budget(&self) -> Result<usize, Denial> {
+    /// Exact JSON bytes of untrusted metadata, charged against the bundle
+    /// budget before any per-field validation. Rust and TypeScript use the
+    /// same quote/escape accounting so the 16 MiB decision cannot diverge.
+    fn raw_metadata_bytes(&self) -> Result<usize, Denial> {
         let Some(metadata) = &self.untrusted_metadata else {
             return Ok(0);
         };
@@ -384,8 +396,6 @@ impl EvidenceComponent {
         metadata.iter().enumerate().try_fold(
             JSON_METADATA_OBJECT_OVERHEAD_BYTES,
             |total, (index, (key, value))| {
-                validate_text(key)?;
-                validate_text(value)?;
                 let key_bytes = serde_json::to_string(key)
                     .map_err(|_| Denial::Malformed)?
                     .len();
@@ -445,61 +455,41 @@ pub struct EvidenceBundle {
 }
 
 impl EvidenceBundle {
+    /// Validates the bundle in the exact phase order of TypeScript's
+    /// `validateEvidenceBundle`, so a bundle with several defects receives the
+    /// same denial in both languages (`vectors/bcap1-bundle-precedence.json`):
+    /// version, counts, the aggregate byte budget, each component, duplicate
+    /// ids, each edge, edge endpoints, graph shape, then subject/challenge id.
     pub fn validate(&self) -> Result<(), Denial> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(Denial::UnsupportedVersion);
         }
-        self.subject.validate()?;
-        if self.challenge_id.decoded_len() != 16 {
+        if self.components.is_empty() {
             return Err(Denial::Malformed);
         }
-        if self.components.len() > MAX_COMPONENTS || self.components.is_empty() {
-            return Err(Denial::ResourceLimit);
-        }
-        let mut ids = HashSet::new();
-        let mut decoded_total = 0usize;
-        for component in &self.components {
-            component.validate()?;
-            if !ids.insert(&component.component_id) {
-                return Err(Denial::Malformed);
-            }
-            decoded_total = decoded_total
-                .checked_add(component.evidence.decoded_len())
-                .and_then(|total| {
-                    total.checked_add(
-                        component
-                            .endorsements
-                            .as_ref()
-                            .map_or(0, B64Url::decoded_len),
-                    )
-                })
-                .ok_or(Denial::ResourceLimit)?;
-            decoded_total = decoded_total
-                .checked_add(component.untrusted_metadata_budget()?)
-                .ok_or(Denial::ResourceLimit)?;
-        }
-        if decoded_total > MAX_BUNDLE_BYTES {
+        if self.components.len() > MAX_COMPONENTS {
             return Err(Denial::ResourceLimit);
         }
         let edges = self.binding_edges.as_deref().unwrap_or_default();
         if edges.len() > MAX_BINDING_EDGES {
             return Err(Denial::ResourceLimit);
         }
-        let mut edge_endpoints = HashSet::new();
+        let mut decoded_total = 0usize;
+        for component in &self.components {
+            for bytes in [
+                component.evidence.decoded_len(),
+                component
+                    .endorsements
+                    .as_ref()
+                    .map_or(0, B64Url::decoded_len),
+                component.raw_metadata_bytes()?,
+            ] {
+                decoded_total = decoded_total
+                    .checked_add(bytes)
+                    .ok_or(Denial::ResourceLimit)?;
+            }
+        }
         for edge in edges {
-            edge.validate()?;
-            // Relations describe how an already-selected parent/child pair is
-            // authenticated; they do not make a second edge between that pair
-            // distinct. Reject before transport/provider exposure.
-            if !edge_endpoints.insert((&edge.parent_component_id, &edge.child_component_id)) {
-                return Err(Denial::Malformed);
-            }
-            if !ids.contains(&edge.parent_component_id)
-                || !ids.contains(&edge.child_component_id)
-                || edge.parent_component_id == edge.child_component_id
-            {
-                return Err(Denial::Malformed);
-            }
             decoded_total = decoded_total
                 .checked_add(edge.evidence.as_ref().map_or(0, B64Url::decoded_len))
                 .ok_or(Denial::ResourceLimit)?;
@@ -507,10 +497,41 @@ impl EvidenceBundle {
         if decoded_total > MAX_BUNDLE_BYTES {
             return Err(Denial::ResourceLimit);
         }
+        for component in &self.components {
+            component.validate()?;
+        }
+        let mut ids = HashSet::new();
+        for component in &self.components {
+            if !ids.insert(&component.component_id) {
+                return Err(Denial::Malformed);
+            }
+        }
+        for edge in edges {
+            edge.validate()?;
+        }
+        let mut edge_endpoints = HashSet::new();
+        for edge in edges {
+            if !ids.contains(&edge.parent_component_id)
+                || !ids.contains(&edge.child_component_id)
+                || edge.parent_component_id == edge.child_component_id
+            {
+                return Err(Denial::Malformed);
+            }
+            // Relations describe how an already-selected parent/child pair is
+            // authenticated; they do not make a second edge between that pair
+            // distinct. Reject before transport/provider exposure.
+            if !edge_endpoints.insert((&edge.parent_component_id, &edge.child_component_id)) {
+                return Err(Denial::Malformed);
+            }
+        }
         // Graph shape is a property of the bundle alone, so a cyclic or
         // self-referencing composition is refused before any provider or
         // relation plugin sees attacker input.
         if has_cycle(edges) {
+            return Err(Denial::Malformed);
+        }
+        self.subject.validate()?;
+        if self.challenge_id.decoded_len() != 16 {
             return Err(Denial::Malformed);
         }
         Ok(())

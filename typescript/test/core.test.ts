@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import snapshotVectors from '../../vectors/bcap1-security-snapshot-jcs.json' with { type: 'json' };
 import coreRejectionVectors from '../../vectors/bcap1-core-rejections.json' with { type: 'json' };
+import graphRejectionVectors from '../../vectors/bcap1-graph-rejections.json' with { type: 'json' };
+import bundlePrecedenceVectors from '../../vectors/bcap1-bundle-precedence.json' with { type: 'json' };
 import transcriptVectors from '../../vectors/bcap1-transcript.json' with { type: 'json' };
 import transportVectors from '../../vectors/bcap1-transport.json' with { type: 'json' };
 
@@ -918,7 +920,7 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     ).toMatchObject({ denial: 'malformed' });
   });
 
-  it('preflights graph shape and every plugin before any provider call', async () => {
+  it('preflights graph shape and every plugin before the claim and any provider call', async () => {
     const fixture = setup();
     let calls = 0;
     fixture.core.registry
@@ -1007,7 +1009,22 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
         testCase.name,
       ).rejects.toMatchObject({ code: testCase.denial });
       expect(calls, `${testCase.name}: provider ran`).toBe(0);
+      // Refused before the claim (spec §7 step 1 precedes step 3): the
+      // relying party's challenge is still usable by a well-formed bundle.
+      expect(
+        await fixture.core.verify({
+          bundle: {
+            ...bundle,
+            components: [component('root'), component('child')],
+            bindingEdges: [edge('root', 'child')],
+          },
+          authenticatedSubject: subject,
+          policy: fixture.policy,
+        }),
+        `${testCase.name}: challenge was burned`,
+      ).toMatchObject({ decision: 'allow' });
     }
+    calls = 0;
     const control = fixture.issue();
     expect(
       await fixture.core.verify({
@@ -1117,36 +1134,26 @@ describe('BCAP1 transport and browser boundary', () => {
       expect(output.messageId).toBe(vector.message.messageId);
     }
   });
+  it('returns the shared denial for every multi-defect bundle precedence vector', () => {
+    const { issue } = setup();
+    const challenge = issue();
+    expect(bundlePrecedenceVectors.format).toBe('bcap1-bundle-precedence-v1');
+    for (const testCase of bundlePrecedenceVectors.cases as VectorBundleCase[]) {
+      expect(
+        () => validateEvidenceBundle(vectorBundle(testCase, challenge.challengeId)),
+        testCase.id,
+      ).toThrowError(expect.objectContaining({ code: testCase.denial }));
+    }
+  });
   it('refuses frozen invalid bundle structures before authenticated transport exposure', () => {
     const { issue } = setup();
     const challenge = issue();
-    for (const rejection of coreRejectionVectors.bundleRejections) {
-      const evidence =
-        rejection.evidenceBytesPerComponent === undefined
-          ? bytes(1)
-          : bytes(rejection.evidenceBytesPerComponent);
-      const metadata =
-        rejection.metadataEntries === undefined
-          ? undefined
-          : Object.fromEntries(
-              Array.from({ length: rejection.metadataEntries }, (_, index) => [
-                `key-${index}`,
-                'value',
-              ]),
-            );
-      const bundle = {
-        protocolVersion: 1 as const,
-        challengeId: challenge.challengeId,
-        subject,
-        components: rejection.componentIds.map((componentId) => ({
-          componentId,
-          provider: 'portable-test',
-          mediaType: 'application/test',
-          evidence,
-          ...(metadata === undefined ? {} : { untrustedMetadata: metadata }),
-        })),
-        bindingEdges: rejection.edges,
-      };
+    expect(graphRejectionVectors.format).toBe('bcap1-graph-rejections-v1');
+    for (const rejection of [
+      ...coreRejectionVectors.bundleRejections,
+      ...graphRejectionVectors.bundleRejections,
+    ] as VectorBundleCase[]) {
+      const bundle = vectorBundle(rejection, challenge.challengeId);
       expect(() => validateEvidenceBundle(bundle), rejection.id).toThrowError(
         expect.objectContaining({ code: rejection.denial }),
       );
@@ -1281,4 +1288,73 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
 
 function oversizedBase64Url(maxBytes = 16 * 1024 * 1024): string {
   return 'A'.repeat(Math.ceil(((maxBytes + 1) * 4) / 3));
+}
+
+interface VectorBundleCase {
+  id: string;
+  denial: string;
+  protocolVersion?: number;
+  subject?: { type: string; value: string };
+  componentIds: string[];
+  edges: {
+    parentComponentId: string;
+    childComponentId: string;
+    relation: string;
+    evidenceBytes?: number;
+  }[];
+  generatedEdges?: number;
+  evidenceBytesPerComponent?: number;
+  metadataEntries?: number;
+  componentOverrides?: {
+    index: number;
+    mediaType?: string;
+    evidenceBytes?: number;
+    metadataKey?: string;
+  }[];
+}
+
+/** Builds the bundle a rejection/precedence vector describes; mirrors `vector_bundle` in rust/core/tests/vectors.rs. */
+function vectorBundle(rejection: VectorBundleCase, challengeId: string) {
+  const evidence = bytes(rejection.evidenceBytesPerComponent ?? 1);
+  const metadata =
+    rejection.metadataEntries === undefined
+      ? undefined
+      : Object.fromEntries(
+          Array.from({ length: rejection.metadataEntries }, (_, index) => [
+            `key-${index}`,
+            'value',
+          ]),
+        );
+  const components: EvidenceComponentV1[] = rejection.componentIds.map((componentId, index) => ({
+    componentId,
+    provider: 'portable-test',
+    mediaType: 'application/test',
+    evidence,
+    ...(metadata === undefined || index !== 0 ? {} : { untrustedMetadata: metadata }),
+  }));
+  for (const change of rejection.componentOverrides ?? []) {
+    const component = components[change.index]!;
+    if (change.mediaType !== undefined) component.mediaType = change.mediaType;
+    if (change.evidenceBytes !== undefined) component.evidence = bytes(change.evidenceBytes);
+    if (change.metadataKey !== undefined)
+      component.untrustedMetadata = { [change.metadataKey]: 'value' };
+  }
+  const bindingEdges = [
+    ...rejection.edges.map(({ evidenceBytes, ...edge }) => ({
+      ...edge,
+      ...(evidenceBytes === undefined ? {} : { evidence: bytes(evidenceBytes) }),
+    })),
+    ...Array.from({ length: rejection.generatedEdges ?? 0 }, () => ({
+      parentComponentId: 'generated-parent',
+      childComponentId: 'generated-child',
+      relation: 'relation-a',
+    })),
+  ];
+  return {
+    protocolVersion: (rejection.protocolVersion ?? 1) as 1,
+    challengeId,
+    subject: rejection.subject ?? subject,
+    components,
+    bindingEdges,
+  };
 }

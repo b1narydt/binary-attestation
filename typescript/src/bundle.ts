@@ -70,11 +70,16 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
     if (!componentIds.has(edge.parentComponentId) || !componentIds.has(edge.childComponentId)) {
       throw new Denial('malformed', 'binding edge references an unknown component');
     }
+    if (edge.parentComponentId === edge.childComponentId)
+      throw new Denial('malformed', 'self binding edge');
     const endpoints = `${edge.parentComponentId}\0${edge.childComponentId}`;
     if (edgeEndpoints.has(endpoints))
       throw new Denial('malformed', 'duplicate binding edge endpoints');
     edgeEndpoints.add(endpoints);
   }
+  // Graph shape is a property of the bundle alone, so a cyclic composition is
+  // refused before any provider or relation plugin sees attacker input.
+  if (hasCycle(bindingEdges ?? [])) throw new Denial('malformed', 'cyclic binding graph');
   const bundle: EvidenceBundleV1 = {
     protocolVersion: 1,
     challengeId: requireString(value.challengeId, 'challengeId'),
@@ -85,6 +90,28 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
   decodeB64Url(bundle.challengeId, 'challengeId', 16);
   validateBundleBytes(bundle);
   return bundle;
+}
+
+/** Kahn's algorithm over parent -> child edges with distinct, known endpoints. */
+function hasCycle(edges: readonly EvidenceBindingEdgeV1[]): boolean {
+  const children = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const { parentComponentId: parent, childComponentId: child } of edges) {
+    children.set(parent, [...(children.get(parent) ?? []), child]);
+    inDegree.set(parent, inDegree.get(parent) ?? 0);
+    inDegree.set(child, (inDegree.get(child) ?? 0) + 1);
+  }
+  const ready = [...inDegree].filter(([, degree]) => degree === 0).map(([node]) => node);
+  let removed = 0;
+  for (let node = ready.pop(); node !== undefined; node = ready.pop()) {
+    removed += 1;
+    for (const child of children.get(node) ?? []) {
+      const degree = (inDegree.get(child) ?? 0) - 1;
+      inDegree.set(child, degree);
+      if (degree === 0) ready.push(child);
+    }
+  }
+  return removed !== inDegree.size;
 }
 
 function rawMetadataJsonBytes(value: unknown): number {
@@ -226,11 +253,23 @@ export async function verifyBundleComponents(input: {
   // the complete bundle before any provider plugin receives attacker input.
   const bundle = validateEvidenceBundle(input.bundle);
   const expected = bindingDigest(challenge);
-  const verified: VerifiedComponentV1[] = [];
-  for (const component of bundle.components) {
+  // Preflight: every provider and relation plugin the bundle names must be
+  // registered before any plugin receives attacker input.
+  const providers = bundle.components.map((component) => {
     const verifier = registry.provider(component.provider);
     if (verifier === undefined)
       throw new Denial('unsupported_provider', `no local verifier for ${component.provider}`);
+    return verifier;
+  });
+  const relations = (bundle.bindingEdges ?? []).map((edge) => {
+    const verifier = registry.relation(edge.relation);
+    if (verifier === undefined)
+      throw new Denial('unsupported_provider', `no relation verifier for ${edge.relation}`);
+    return verifier;
+  });
+  const verified: VerifiedComponentV1[] = [];
+  for (const [index, component] of bundle.components.entries()) {
+    const verifier = providers[index]!;
     const output = validateVerifiedComponent(
       await verifier.verify(component, expected, nowMs, snapshot),
       component,
@@ -238,7 +277,7 @@ export async function verifyBundleComponents(input: {
     );
     verified.push(output);
   }
-  await verifyBindingGraph(bundle, verified, registry, expected, snapshot);
+  await verifyBindingGraph(bundle, verified, relations, expected, snapshot);
   return verified;
 }
 
@@ -317,24 +356,17 @@ function validateAdvisories(value: unknown): string[] {
 async function verifyBindingGraph(
   bundle: EvidenceBundleV1,
   verified: readonly VerifiedComponentV1[],
-  registry: VerifierRegistry,
+  relations: readonly BindingRelationVerifier[],
   expected: Uint8Array,
   snapshot: SignedSecuritySnapshotV1,
 ): Promise<void> {
   const components = new Map(verified.map((component) => [component.componentId, component]));
   const parentOf = new Map<string, string[]>();
-  const edgeKeys = new Set<string>();
-  for (const edge of bundle.bindingEdges ?? []) {
+  for (const [index, edge] of (bundle.bindingEdges ?? []).entries()) {
     const parent = components.get(edge.parentComponentId);
     const child = components.get(edge.childComponentId);
-    if (!parent || !child || parent === child)
-      throw new Denial('component_unbound', 'dangling or self binding edge');
-    const edgeKey = `${edge.parentComponentId}\0${edge.childComponentId}\0${edge.relation}`;
-    if (edgeKeys.has(edgeKey)) throw new Denial('malformed', 'duplicate binding edge');
-    edgeKeys.add(edgeKey);
-    const verifier = registry.relation(edge.relation);
-    if (!verifier)
-      throw new Denial('unsupported_provider', `no relation verifier for ${edge.relation}`);
+    const verifier = relations[index];
+    if (!parent || !child || !verifier) throw new Denial('internal_error');
     await verifier.verify(parent, child, edge, expected, snapshot);
     parentOf.set(child.componentId, [
       ...(parentOf.get(child.componentId) ?? []),
@@ -353,7 +385,8 @@ async function verifyBindingGraph(
   const reachesDirect = (id: string): boolean => {
     const prior = memo.get(id);
     if (prior !== undefined) return prior;
-    if (visiting.has(id)) throw new Denial('component_unbound', 'cyclic binding graph');
+    // validateEvidenceBundle already refused cycles; reaching one is a bug.
+    if (visiting.has(id)) throw new Denial('internal_error', 'cyclic binding graph');
     visiting.add(id);
     const result = direct.has(id) || (parentOf.get(id) ?? []).some(reachesDirect);
     visiting.delete(id);

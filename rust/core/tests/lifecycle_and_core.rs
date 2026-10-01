@@ -700,3 +700,123 @@ fn context_splice_and_composition_cycles_refuse() {
     });
     assert!(matches!(cycle_result, Err(Denial::Malformed)));
 }
+
+struct CountingVerifier {
+    inner: FixtureVerifier,
+    calls: Arc<AtomicUsize>,
+}
+impl EvidenceVerifier for CountingVerifier {
+    fn provider(&self) -> &'static str {
+        self.inner.provider()
+    }
+    fn verify(
+        &self,
+        component: &EvidenceComponent,
+        expected: [u8; 64],
+        now: u64,
+    ) -> Result<VerifiedComponent, Denial> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.verify(component, expected, now)
+    }
+}
+
+#[test]
+fn graph_and_plugin_preflight_precede_every_provider_call() {
+    type Mutate = fn(&mut EvidenceBundle);
+    let cases: [(&str, Mutate, Denial); 4] = [
+        (
+            "self edge",
+            |bundle| {
+                bundle.binding_edges = Some(vec![EvidenceBindingEdge {
+                    parent_component_id: "parent".into(),
+                    child_component_id: "parent".into(),
+                    relation: "fixture-links-v1".into(),
+                    evidence: None,
+                }]);
+            },
+            Denial::Malformed,
+        ),
+        (
+            "cycle",
+            |bundle| {
+                bundle
+                    .binding_edges
+                    .as_mut()
+                    .expect("edge")
+                    .push(EvidenceBindingEdge {
+                        parent_component_id: "child".into(),
+                        child_component_id: "parent".into(),
+                        relation: "fixture-links-v1".into(),
+                        evidence: None,
+                    });
+            },
+            Denial::Malformed,
+        ),
+        (
+            "unregistered relation",
+            |bundle| {
+                bundle.binding_edges.as_mut().expect("edge")[0].relation = "absent-links-v1".into();
+            },
+            Denial::UnsupportedProvider,
+        ),
+        (
+            "unregistered provider on a later component",
+            |bundle| bundle.components[1].provider = "absent-v1".into(),
+            Denial::UnsupportedProvider,
+        ),
+    ];
+    for (name, mutate, expected) in cases {
+        let clock = Arc::new(ManualClock::default());
+        clock.set(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (snapshot, challenge) = snapshot_and_challenge(100);
+        let (verifier, store) = concurrency_core(
+            snapshot,
+            clock,
+            Arc::new(CountingVerifier {
+                inner: FixtureVerifier {
+                    clock: None,
+                    advance_to: 1,
+                    valid_until: 100,
+                },
+                calls: calls.clone(),
+            }),
+        );
+        store.issue(challenge.clone(), 1).expect("issue");
+        let mut candidate = bundle(&challenge, true);
+        mutate(&mut candidate);
+        let result = verifier.verify(VerificationInput {
+            authenticated_subject: &challenge.subject,
+            bundle: &candidate,
+            transport_context_digest: &challenge.context_digest,
+        });
+        assert_eq!(result.map(|_| ()), Err(expected), "{name}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "{name}: provider ran");
+    }
+    // Control: the same harness reaches the provider for a valid bundle.
+    let clock = Arc::new(ManualClock::default());
+    clock.set(1);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (snapshot, challenge) = snapshot_and_challenge(100);
+    let (verifier, store) = concurrency_core(
+        snapshot,
+        clock,
+        Arc::new(CountingVerifier {
+            inner: FixtureVerifier {
+                clock: None,
+                advance_to: 1,
+                valid_until: 100,
+            },
+            calls: calls.clone(),
+        }),
+    );
+    store.issue(challenge.clone(), 1).expect("issue");
+    verifier
+        .verify(VerificationInput {
+            authenticated_subject: &challenge.subject,
+            bundle: &bundle(&challenge, true),
+            transport_context_digest: &challenge.context_digest,
+        })
+        .expect("valid bundle");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}

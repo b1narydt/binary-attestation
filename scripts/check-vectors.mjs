@@ -384,12 +384,30 @@ function verifyCoreRejections(vector) {
       ids.add(id);
     }
     const endpoints = new Set();
+    const children = new Map();
     for (const edge of testCase.edges) {
       if (!ids.has(edge.parentComponentId) || !ids.has(edge.childComponentId)) rejected = true;
+      if (edge.parentComponentId === edge.childComponentId) rejected = true;
       const key = `${edge.parentComponentId}\0${edge.childComponentId}`;
       if (endpoints.has(key)) rejected = true;
       endpoints.add(key);
+      children.set(edge.parentComponentId, [
+        ...(children.get(edge.parentComponentId) ?? []),
+        edge.childComponentId,
+      ]);
     }
+    const visiting = new Set();
+    const done = new Set();
+    const cyclic = (node) => {
+      if (done.has(node)) return false;
+      if (visiting.has(node)) return true;
+      visiting.add(node);
+      const found = (children.get(node) ?? []).some(cyclic);
+      visiting.delete(node);
+      done.add(node);
+      return found;
+    };
+    if ([...children.keys()].some(cyclic)) rejected = true;
     if (testCase.metadataEntries > 256) rejected = true;
     if (
       (testCase.evidenceBytesPerComponent ?? 0) * testCase.componentIds.length >=

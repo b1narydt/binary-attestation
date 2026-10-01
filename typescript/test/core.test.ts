@@ -915,7 +915,114 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
         authenticatedSubject: subject,
         policy: fixture.policy,
       }),
-    ).toMatchObject({ denial: 'component_unbound' });
+    ).toMatchObject({ denial: 'malformed' });
+  });
+
+  it('preflights graph shape and every plugin before any provider call', async () => {
+    const fixture = setup();
+    let calls = 0;
+    fixture.core.registry
+      .registerProvider({
+        provider: 'counted',
+        async verify(component, expectedBinding) {
+          calls += 1;
+          return {
+            componentId: component.componentId,
+            provider: component.provider,
+            evidenceDigest: evidenceDigest(component),
+            bindingDigest:
+              component.componentId === 'root' ? encodeB64Url(expectedBinding) : bytes(64, 0),
+            platform: {},
+            measurements: {},
+            tcb: {},
+            advisories: [],
+            validUntilMs: '9000',
+          };
+        },
+      })
+      .registerRelation({ relation: 'test-edge', async verify() {} });
+    const component = (componentId: string, provider = 'counted') => ({
+      componentId,
+      provider,
+      mediaType: 'application/test',
+      evidence: bytes(1),
+    });
+    const edge = (parentComponentId: string, childComponentId: string, relation = 'test-edge') => ({
+      parentComponentId,
+      childComponentId,
+      relation,
+    });
+    const cases = [
+      {
+        name: 'self edge',
+        components: [component('root'), component('child')],
+        bindingEdges: [edge('root', 'child'), edge('root', 'root')],
+        denial: 'malformed',
+      },
+      {
+        name: 'cycle through a directly bound component',
+        components: [component('root'), component('child')],
+        bindingEdges: [edge('root', 'child'), edge('child', 'root')],
+        denial: 'malformed',
+      },
+      {
+        name: 'unregistered relation',
+        components: [component('root'), component('child')],
+        bindingEdges: [edge('root', 'child', 'absent-edge')],
+        denial: 'unsupported_provider',
+      },
+      {
+        name: 'unregistered provider on a later component',
+        components: [component('root'), component('child', 'absent')],
+        bindingEdges: [edge('root', 'child')],
+        denial: 'unsupported_provider',
+      },
+    ];
+    for (const testCase of cases) {
+      calls = 0;
+      const challenge = fixture.issue();
+      const bundle = {
+        protocolVersion: 1 as const,
+        challengeId: challenge.challengeId,
+        subject,
+        components: testCase.components,
+        bindingEdges: testCase.bindingEdges,
+      };
+      expect(
+        await fixture.core.verify({
+          bundle,
+          authenticatedSubject: subject,
+          policy: fixture.policy,
+        }),
+        testCase.name,
+      ).toMatchObject({ denial: testCase.denial });
+      await expect(
+        verifyBundleComponents({
+          challenge,
+          bundle,
+          registry: fixture.core.registry,
+          snapshot: fixture.core.snapshots.current()!,
+          nowMs: 1_000n,
+        }),
+        testCase.name,
+      ).rejects.toMatchObject({ code: testCase.denial });
+      expect(calls, `${testCase.name}: provider ran`).toBe(0);
+    }
+    const control = fixture.issue();
+    expect(
+      await fixture.core.verify({
+        bundle: {
+          protocolVersion: 1 as const,
+          challengeId: control.challengeId,
+          subject,
+          components: [component('root'), component('child')],
+          bindingEdges: [edge('root', 'child')],
+        },
+        authenticatedSubject: subject,
+        policy: fixture.policy,
+      }),
+    ).toMatchObject({ decision: 'allow' });
+    expect(calls).toBe(2);
   });
 
   it('refuses a future-issued challenge terminally and releases outstanding slots after terminal or expiry', async () => {

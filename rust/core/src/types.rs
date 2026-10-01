@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use k256::PublicKey;
@@ -494,7 +494,10 @@ impl EvidenceBundle {
             if !edge_endpoints.insert((&edge.parent_component_id, &edge.child_component_id)) {
                 return Err(Denial::Malformed);
             }
-            if !ids.contains(&edge.parent_component_id) || !ids.contains(&edge.child_component_id) {
+            if !ids.contains(&edge.parent_component_id)
+                || !ids.contains(&edge.child_component_id)
+                || edge.parent_component_id == edge.child_component_id
+            {
                 return Err(Denial::Malformed);
             }
             decoded_total = decoded_total
@@ -504,8 +507,48 @@ impl EvidenceBundle {
         if decoded_total > MAX_BUNDLE_BYTES {
             return Err(Denial::ResourceLimit);
         }
+        // Graph shape is a property of the bundle alone, so a cyclic or
+        // self-referencing composition is refused before any provider or
+        // relation plugin sees attacker input.
+        if has_cycle(edges) {
+            return Err(Denial::Malformed);
+        }
         Ok(())
     }
+}
+
+/// Kahn's algorithm over parent -> child edges; endpoints are already known
+/// to be distinct registered component ids.
+fn has_cycle(edges: &[EvidenceBindingEdge]) -> bool {
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    for edge in edges {
+        let (parent, child) = (
+            edge.parent_component_id.as_str(),
+            edge.child_component_id.as_str(),
+        );
+        children.entry(parent).or_default().push(child);
+        in_degree.entry(parent).or_default();
+        *in_degree.entry(child).or_default() += 1;
+    }
+    let mut ready = in_degree
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(node, _)| *node)
+        .collect::<Vec<_>>();
+    let mut removed = 0usize;
+    while let Some(node) = ready.pop() {
+        removed += 1;
+        for child in children.get(node).into_iter().flatten() {
+            if let Some(degree) = in_degree.get_mut(child) {
+                *degree -= 1;
+                if *degree == 0 {
+                    ready.push(child);
+                }
+            }
+        }
+    }
+    removed != in_degree.len()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

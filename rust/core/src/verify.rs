@@ -6,8 +6,8 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AttestationSubject, B64Url, Challenge, ChallengeStore, Clock, Denial, EvidenceBundle,
-    PolicyEvaluator, ProviderRegistry, RelationRegistry, SecuritySnapshotStore,
+    AttestationSubject, B64Url, BindingRelationVerifier, Challenge, ChallengeStore, Clock, Denial,
+    EvidenceBundle, PolicyEvaluator, ProviderRegistry, RelationRegistry, SecuritySnapshotStore,
     SignedSecuritySnapshot, VerifiedClaims, VerifiedComponent, constant_time_eq,
 };
 
@@ -172,9 +172,25 @@ impl CoreVerifier {
         }
         let snapshot = self.current_matching_snapshot(challenge, now_ms)?;
         let expected_binding = challenge.binding_digest()?;
+        // Preflight: every provider and relation plugin the bundle names must
+        // be registered before any plugin receives attacker input. Graph shape
+        // was already checked by `EvidenceBundle::validate`.
+        let providers = input
+            .bundle
+            .components
+            .iter()
+            .map(|component| self.providers.get(&component.provider))
+            .collect::<Result<Vec<_>, _>>()?;
+        let relations = input
+            .bundle
+            .binding_edges
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|edge| self.relations.get(&edge.relation))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut verified = Vec::with_capacity(input.bundle.components.len());
-        for component in &input.bundle.components {
-            let verifier = self.providers.get(&component.provider)?;
+        for (component, verifier) in input.bundle.components.iter().zip(providers) {
             let output = verifier.verify(component, expected_binding, now_ms)?;
             output.validate()?;
             if output.component_id != component.component_id
@@ -197,7 +213,7 @@ impl CoreVerifier {
         validate_composition(
             input.bundle,
             &verified,
-            &self.relations,
+            &relations,
             expected_binding,
             now_ms,
         )?;
@@ -248,7 +264,7 @@ impl CoreVerifier {
 fn validate_composition(
     bundle: &EvidenceBundle,
     components: &[VerifiedComponent],
-    relations: &RelationRegistry,
+    relations: &[Arc<dyn BindingRelationVerifier>],
     expected_binding: [u8; 64],
     now_ms: u64,
 ) -> Result<(), Denial> {
@@ -260,43 +276,22 @@ fn validate_composition(
         .map(|component| (component.component_id.as_str(), component))
         .collect::<HashMap<_, _>>();
     let edges = bundle.binding_edges.as_deref().unwrap_or_default();
+    if relations.len() != edges.len() {
+        return Err(Denial::InternalError);
+    }
     let mut outgoing: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut edge_set = HashSet::new();
-    for edge in edges {
-        if !edge_set.insert((&edge.parent_component_id, &edge.child_component_id)) {
-            return Err(Denial::Malformed);
-        }
+    for (edge, verifier) in edges.iter().zip(relations) {
         let parent = by_id
             .get(edge.parent_component_id.as_str())
             .ok_or(Denial::Malformed)?;
         let child = by_id
             .get(edge.child_component_id.as_str())
             .ok_or(Denial::Malformed)?;
-        let verifier = relations.get(&edge.relation)?;
         verifier.verify(parent, child, edge, expected_binding, now_ms)?;
         outgoing
             .entry(edge.child_component_id.as_str())
             .or_default()
             .push(edge.parent_component_id.as_str());
-    }
-    let mut directed = HashMap::<&str, Vec<&str>>::new();
-    for edge in edges {
-        directed
-            .entry(edge.parent_component_id.as_str())
-            .or_default()
-            .push(edge.child_component_id.as_str());
-    }
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    if components.iter().any(|component| {
-        has_cycle(
-            component.component_id.as_str(),
-            &directed,
-            &mut visiting,
-            &mut visited,
-        )
-    }) {
-        return Err(Denial::Malformed);
     }
     // Edges point parent -> child, so following child-to-parent requires every
     // component to reach a direct authenticated BCAP1 binding.  This accepts
@@ -314,28 +309,6 @@ fn validate_composition(
         }
     }
     Ok(())
-}
-
-fn has_cycle<'a>(
-    node: &'a str,
-    edges: &HashMap<&'a str, Vec<&'a str>>,
-    visiting: &mut HashSet<&'a str>,
-    visited: &mut HashSet<&'a str>,
-) -> bool {
-    if visited.contains(node) {
-        return false;
-    }
-    if !visiting.insert(node) {
-        return true;
-    }
-    let found = edges.get(node).is_some_and(|children| {
-        children
-            .iter()
-            .any(|child| has_cycle(child, edges, visiting, visited))
-    });
-    visiting.remove(node);
-    visited.insert(node);
-    found
 }
 
 fn reaches_direct_binding(

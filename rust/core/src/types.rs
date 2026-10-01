@@ -148,13 +148,24 @@ impl<'de> Deserialize<'de> for U64Decimal {
     }
 }
 
+/// Optional bundle fields may be absent but never JSON `null` (the schemas give
+/// them no null type, and TypeScript refuses null as malformed).
+fn non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 pub fn validate_text(value: &str) -> Result<(), Denial> {
-    if value.is_empty()
-        || value.len() > MAX_STRING_BYTES
-        || value.contains('\0')
-        || value.nfc().collect::<String>() != value
-    {
+    if value.is_empty() || value.contains('\0') || value.nfc().collect::<String>() != value {
         return Err(Denial::Malformed);
+    }
+    // Spec §9: the 1,024-byte string bound is a resource limit, and excess is
+    // `resource_limit`. Checked after text validity, as TypeScript does.
+    if value.len() > MAX_STRING_BYTES {
+        return Err(Denial::ResourceLimit);
     }
     Ok(())
 }
@@ -348,9 +359,17 @@ pub struct EvidenceComponent {
     pub provider: String,
     pub media_type: String,
     pub evidence: B64Url,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub endorsements: Option<B64Url>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub untrusted_metadata: Option<BTreeMap<String, String>>,
 }
 
@@ -419,7 +438,11 @@ pub struct EvidenceBindingEdge {
     pub parent_component_id: String,
     pub child_component_id: String,
     pub relation: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub evidence: Option<B64Url>,
 }
 
@@ -450,7 +473,11 @@ pub struct EvidenceBundle {
     pub challenge_id: B64Url,
     pub subject: AttestationSubject,
     pub components: Vec<EvidenceComponent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub binding_edges: Option<Vec<EvidenceBindingEdge>>,
 }
 

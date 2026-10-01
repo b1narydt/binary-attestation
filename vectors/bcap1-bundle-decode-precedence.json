@@ -1,0 +1,243 @@
+{
+  "format": "bcap1-bundle-decode-precedence-v1",
+  "description": "Phase-0 (decode) precedence. Every structural rule the Rust core enforces while deserializing an EvidenceBundle (unknown fields, JSON types, protocolVersion as an unsigned 8-bit integer, strict canonical base64url, string-valued metadata, no null for optional fields) is malformed and precedes every count, size and text-limit check. Text over 1,024 UTF-8 bytes is resource_limit (spec §9) after non-empty/NUL/NFC validity. Each case mutates the valid base bundle in order: set (path = value), repeat (path = prefix + character*count + suffix), cloneComponents/cloneEdges (replace the array with count copies of its first element; cloned components get componentId c<i>). Paths are dot-separated object keys and array indexes.",
+  "base": {
+    "protocolVersion": 1,
+    "challengeId": "AAAAAAAAAAAAAAAAAAAAAA",
+    "subject": {
+      "type": "did",
+      "value": "peer"
+    },
+    "components": [
+      {
+        "componentId": "root",
+        "provider": "fixture-v1",
+        "mediaType": "application/fixture",
+        "evidence": "AQ"
+      },
+      {
+        "componentId": "child",
+        "provider": "fixture-v1",
+        "mediaType": "application/fixture",
+        "evidence": "Ag"
+      }
+    ],
+    "bindingEdges": [
+      {
+        "parentComponentId": "root",
+        "childComponentId": "child",
+        "relation": "relation-a"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "invalid-base64url-length-beats-bundle-budget",
+      "mutations": [
+        {
+          "op": "repeat",
+          "path": "components.0.evidence",
+          "character": "A",
+          "count": 22369625
+        }
+      ],
+      "defects": [
+        "base64UrlLength",
+        "bundleBytes"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "noncanonical-base64url-beats-component-evidence-limit",
+      "mutations": [
+        {
+          "op": "repeat",
+          "path": "components.0.evidence",
+          "character": "A",
+          "count": 2796205,
+          "suffix": "B"
+        }
+      ],
+      "defects": [
+        "base64UrlTrailingBits",
+        "evidenceBytes"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "null-binding-edges",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "bindingEdges",
+          "value": null
+        }
+      ],
+      "defects": [
+        "nullOptional"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "null-endorsements",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "components.0.endorsements",
+          "value": null
+        }
+      ],
+      "defects": [
+        "nullOptional"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "null-untrusted-metadata",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "components.0.untrustedMetadata",
+          "value": null
+        }
+      ],
+      "defects": [
+        "nullOptional"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "null-edge-evidence",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "bindingEdges.0.evidence",
+          "value": null
+        }
+      ],
+      "defects": [
+        "nullOptional"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "unknown-component-field-beats-component-limit",
+      "mutations": [
+        {
+          "op": "cloneComponents",
+          "count": 33
+        },
+        {
+          "op": "set",
+          "path": "components.32.extra",
+          "value": "x"
+        }
+      ],
+      "defects": [
+        "unknownField",
+        "componentCount"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "non-string-metadata-beats-component-limit",
+      "mutations": [
+        {
+          "op": "cloneComponents",
+          "count": 33
+        },
+        {
+          "op": "set",
+          "path": "components.0.untrustedMetadata",
+          "value": {
+            "key": 1
+          }
+        }
+      ],
+      "defects": [
+        "metadataType",
+        "componentCount"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "non-string-component-id-beats-edge-limit",
+      "mutations": [
+        {
+          "op": "cloneEdges",
+          "count": 65
+        },
+        {
+          "op": "set",
+          "path": "components.1.componentId",
+          "value": 7
+        }
+      ],
+      "defects": [
+        "fieldType",
+        "edgeCount"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "protocol-version-outside-u8-is-malformed",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "protocolVersion",
+          "value": 256
+        }
+      ],
+      "defects": [
+        "protocolVersionType"
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "protocol-version-inside-u8-is-unsupported",
+      "mutations": [
+        {
+          "op": "set",
+          "path": "protocolVersion",
+          "value": 2
+        }
+      ],
+      "defects": [
+        "protocolVersion"
+      ],
+      "denial": "unsupported_version"
+    },
+    {
+      "id": "overlong-text-is-resource-limit",
+      "mutations": [
+        {
+          "op": "repeat",
+          "path": "components.0.mediaType",
+          "character": "a",
+          "count": 1025
+        }
+      ],
+      "defects": [
+        "textBytes"
+      ],
+      "denial": "resource_limit"
+    },
+    {
+      "id": "non-nfc-text-beats-overlong-text",
+      "mutations": [
+        {
+          "op": "repeat",
+          "path": "components.0.mediaType",
+          "character": "a",
+          "count": 1025,
+          "prefix": "é"
+        }
+      ],
+      "defects": [
+        "textNfc",
+        "textBytes"
+      ],
+      "denial": "malformed"
+    }
+  ]
+}

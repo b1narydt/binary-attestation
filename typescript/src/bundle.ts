@@ -29,17 +29,13 @@ import {
 } from './types.js';
 
 export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
-  const required = ['protocolVersion', 'challengeId', 'subject', 'components'];
-  if (!isRecord(value) || !hasOnlyOptional(value, required, ['bindingEdges']))
-    throw new Denial('malformed', 'invalid evidence bundle shape');
+  assertBundleShape(value);
   if (value.protocolVersion !== 1) throw new Denial('unsupported_version');
   const componentsRaw = value.components;
-  if (!Array.isArray(componentsRaw) || componentsRaw.length === 0)
+  if (componentsRaw.length === 0)
     throw new Denial('malformed', 'components must be a non-empty array');
   if (componentsRaw.length > 32) throw new Denial('resource_limit', 'too many components');
   const edgesRaw = value.bindingEdges;
-  if (edgesRaw !== undefined && !Array.isArray(edgesRaw))
-    throw new Denial('malformed', 'bindingEdges must be an array');
   if (edgesRaw !== undefined && edgesRaw.length > 64)
     throw new Denial('resource_limit', 'too many binding edges');
   let encodedBundleUpperBound = 0;
@@ -90,6 +86,103 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
   decodeB64Url(bundle.challengeId, 'challengeId', 16);
   validateBundleBytes(bundle);
   return bundle;
+}
+
+interface BundleShape extends Record<string, unknown> {
+  protocolVersion: number;
+  components: Record<string, unknown>[];
+  bindingEdges?: Record<string, unknown>[];
+}
+
+/**
+ * Phase 0: the structural checks the Rust core enforces while deserializing
+ * (`serde` with `deny_unknown_fields`, typed fields, a `u8` protocol version,
+ * strict `B64Url`, string-valued metadata, no JSON `null`). Rust cannot even
+ * construct a bundle that fails one of these, so every such defect is
+ * `malformed` and must win over any count, size or text-limit check.
+ * Cost is a linear scan with no decoding or allocation.
+ */
+function assertBundleShape(value: unknown): asserts value is BundleShape {
+  if (
+    !isRecord(value) ||
+    !hasOnlyOptional(
+      value,
+      ['protocolVersion', 'challengeId', 'subject', 'components'],
+      ['bindingEdges'],
+    )
+  )
+    throw new Denial('malformed', 'invalid evidence bundle shape');
+  const bundle = value as Record<string, unknown>;
+  const version = bundle.protocolVersion;
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 0 || version > 255)
+    throw new Denial('malformed', 'protocolVersion must be an unsigned 8-bit integer');
+  if (!isB64UrlText(bundle.challengeId))
+    throw new Denial('malformed', 'challengeId is not canonical base64url');
+  const subject = bundle.subject;
+  if (
+    !isRecord(subject) ||
+    !hasOnly(subject, ['type', 'value']) ||
+    typeof subject.type !== 'string' ||
+    typeof subject.value !== 'string'
+  )
+    throw new Denial('malformed', 'invalid subject shape');
+  if (!Array.isArray(bundle.components))
+    throw new Denial('malformed', 'components must be an array');
+  for (const component of bundle.components as unknown[]) {
+    if (
+      !isRecord(component) ||
+      !hasOnlyOptional(
+        component,
+        ['componentId', 'provider', 'mediaType', 'evidence'],
+        ['endorsements', 'untrustedMetadata'],
+      ) ||
+      typeof component.componentId !== 'string' ||
+      typeof component.provider !== 'string' ||
+      typeof component.mediaType !== 'string' ||
+      !isB64UrlText(component.evidence) ||
+      (Object.hasOwn(component, 'endorsements') && !isB64UrlText(component.endorsements))
+    )
+      throw new Denial('malformed', 'invalid evidence component');
+    if (Object.hasOwn(component, 'untrustedMetadata')) {
+      const metadata = component.untrustedMetadata;
+      if (!isRecord(metadata)) throw new Denial('malformed', 'untrusted metadata must be a record');
+      for (const key in metadata) {
+        if (Object.hasOwn(metadata, key) && typeof metadata[key] !== 'string')
+          throw new Denial('malformed', 'untrusted metadata values must be strings');
+      }
+    }
+  }
+  if (Object.hasOwn(bundle, 'bindingEdges')) {
+    if (!Array.isArray(bundle.bindingEdges))
+      throw new Denial('malformed', 'bindingEdges must be an array');
+    for (const edge of bundle.bindingEdges as unknown[]) {
+      if (
+        !isRecord(edge) ||
+        !hasOnlyOptional(
+          edge,
+          ['parentComponentId', 'childComponentId', 'relation'],
+          ['evidence'],
+        ) ||
+        typeof edge.parentComponentId !== 'string' ||
+        typeof edge.childComponentId !== 'string' ||
+        typeof edge.relation !== 'string' ||
+        (Object.hasOwn(edge, 'evidence') && !isB64UrlText(edge.evidence))
+      )
+        throw new Denial('malformed', 'invalid binding edge');
+    }
+  }
+}
+
+const B64URL_TEXT = /^[A-Za-z0-9_-]+$/u;
+const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/** Mirrors Rust `B64Url::new`: non-empty unpadded alphabet, a possible length, zero unused trailing bits. */
+function isB64UrlText(value: unknown): boolean {
+  if (typeof value !== 'string' || !B64URL_TEXT.test(value)) return false;
+  const remainder = value.length % 4;
+  if (remainder === 1) return false;
+  const last = B64URL_ALPHABET.indexOf(value[value.length - 1]!);
+  return !((remainder === 2 && (last & 0x0f) !== 0) || (remainder === 3 && (last & 0x03) !== 0));
 }
 
 /** Kahn's algorithm over parent -> child edges with distinct, known endpoints. */

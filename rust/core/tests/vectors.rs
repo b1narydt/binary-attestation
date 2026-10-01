@@ -335,3 +335,96 @@ fn vector_bundle(rejection: &Value) -> EvidenceBundle {
         binding_edges: Some(edges),
     }
 }
+
+#[test]
+fn bundle_decode_precedence_vectors_pick_the_shared_denial() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../vectors/bcap1-bundle-decode-precedence.json"
+    ))
+    .expect("vectors");
+    assert_eq!(
+        vectors["format"].as_str(),
+        Some("bcap1-bundle-decode-precedence-v1")
+    );
+    // The base must be accepted, or every case would pass vacuously.
+    decode_bundle(vectors["base"].clone()).expect("valid base bundle");
+    for case in vectors["cases"].as_array().expect("cases") {
+        let mut bundle = vectors["base"].clone();
+        for mutation in case["mutations"].as_array().expect("mutations") {
+            apply_mutation(&mut bundle, mutation);
+        }
+        let expected = match case["denial"].as_str() {
+            Some("malformed") => Denial::Malformed,
+            Some("resource_limit") => Denial::ResourceLimit,
+            Some("unsupported_version") => Denial::UnsupportedVersion,
+            value => panic!("unsupported denial vector {value:?}"),
+        };
+        assert_eq!(decode_bundle(bundle), Err(expected), "{}", case["id"]);
+    }
+}
+
+/// The transport's decode path: strict serde (a decode failure is malformed),
+/// then validation.
+fn decode_bundle(value: Value) -> Result<(), Denial> {
+    let bundle: EvidenceBundle = serde_json::from_value(value).map_err(|_| Denial::Malformed)?;
+    bundle.validate()
+}
+
+fn value_at<'a>(value: &'a mut Value, path: &str) -> (&'a mut Value, String) {
+    let mut parts = path.split('.').collect::<Vec<_>>();
+    let last = parts.pop().expect("path").to_owned();
+    let mut current = value;
+    for part in parts {
+        current = match part.parse::<usize>() {
+            Ok(index) => &mut current[index],
+            Err(_) => &mut current[part],
+        };
+    }
+    (current, last)
+}
+
+fn apply_mutation(bundle: &mut Value, mutation: &Value) {
+    let replacement = match mutation["op"].as_str().expect("op") {
+        "set" => mutation["value"].clone(),
+        "repeat" => Value::String(format!(
+            "{}{}{}",
+            mutation["prefix"].as_str().unwrap_or_default(),
+            mutation["character"].as_str().expect("character").repeat(
+                usize::try_from(mutation["count"].as_u64().expect("count")).expect("usize")
+            ),
+            mutation["suffix"].as_str().unwrap_or_default(),
+        )),
+        op @ ("cloneComponents" | "cloneEdges") => {
+            let key = if op == "cloneComponents" {
+                "components"
+            } else {
+                "bindingEdges"
+            };
+            let first = bundle[key][0].clone();
+            let count = mutation["count"].as_u64().expect("count");
+            bundle[key] = Value::Array(
+                (0..count)
+                    .map(|index| {
+                        let mut copy = first.clone();
+                        if op == "cloneComponents" {
+                            copy["componentId"] = Value::String(format!("c{index}"));
+                        }
+                        copy
+                    })
+                    .collect(),
+            );
+            return;
+        }
+        op => panic!("unsupported mutation {op}"),
+    };
+    let (parent, last) = value_at(bundle, mutation["path"].as_str().expect("path"));
+    match last.parse::<usize>() {
+        Ok(index) => parent[index] = replacement,
+        Err(_) => {
+            parent
+                .as_object_mut()
+                .expect("object")
+                .insert(last, replacement);
+        }
+    }
+}

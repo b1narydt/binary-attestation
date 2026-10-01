@@ -402,6 +402,31 @@ function verifyBundlePrecedence(vector) {
   }
 }
 
+const DECODE_MUTATIONS = new Set(['set', 'repeat', 'cloneComponents', 'cloneEdges']);
+
+function verifyBundleDecodePrecedence(vector) {
+  equal(
+    vector.format,
+    'bcap1-bundle-decode-precedence-v1',
+    'bundle-decode-precedence vector format',
+  );
+  if (vector.base === null || typeof vector.base !== 'object') fail('decode precedence base missing');
+  if (!Array.isArray(vector.cases) || vector.cases.length === 0)
+    fail('decode precedence vectors are empty');
+  const ids = new Set();
+  for (const testCase of vector.cases) {
+    if (!testCase.id || ids.has(testCase.id)) fail('decode precedence case id is missing or reused');
+    ids.add(testCase.id);
+    if (!PRECEDENCE_DENIALS.has(testCase.denial)) fail(`${testCase.id} has an invalid denial`);
+    if (!Array.isArray(testCase.defects) || testCase.defects.length === 0)
+      fail(`${testCase.id} does not name its defects`);
+    if (!Array.isArray(testCase.mutations) || testCase.mutations.length === 0)
+      fail(`${testCase.id} has no mutations`);
+    for (const mutation of testCase.mutations)
+      if (!DECODE_MUTATIONS.has(mutation.op)) fail(`${testCase.id} has an unknown mutation`);
+  }
+}
+
 function verifyBundleRejections(cases) {
   for (const testCase of cases) {
     if (testCase.denial !== 'malformed' && testCase.denial !== 'resource_limit')
@@ -554,6 +579,7 @@ async function main() {
   verifyCoreRejections(coreRejections);
   verifyGraphRejections(await readJson(vectorsDir, 'bcap1-graph-rejections.json'));
   verifyBundlePrecedence(await readJson(vectorsDir, 'bcap1-bundle-precedence.json'));
+  verifyBundleDecodePrecedence(await readJson(vectorsDir, 'bcap1-bundle-decode-precedence.json'));
   const rejections = await readJson(vectorsDir, 'bcap1-validation-rejections.json');
   equal(rejections.format, 'bcap1-schema-rejections-v1', 'schema-rejection vector format');
   if (!Array.isArray(rejections.cases) || rejections.cases.length === 0)

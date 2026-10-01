@@ -6,6 +6,7 @@ import snapshotVectors from '../../vectors/bcap1-security-snapshot-jcs.json' wit
 import coreRejectionVectors from '../../vectors/bcap1-core-rejections.json' with { type: 'json' };
 import graphRejectionVectors from '../../vectors/bcap1-graph-rejections.json' with { type: 'json' };
 import bundlePrecedenceVectors from '../../vectors/bcap1-bundle-precedence.json' with { type: 'json' };
+import bundleDecodePrecedenceVectors from '../../vectors/bcap1-bundle-decode-precedence.json' with { type: 'json' };
 import transcriptVectors from '../../vectors/bcap1-transcript.json' with { type: 'json' };
 import transportVectors from '../../vectors/bcap1-transport.json' with { type: 'json' };
 
@@ -1145,6 +1146,21 @@ describe('BCAP1 transport and browser boundary', () => {
       ).toThrowError(expect.objectContaining({ code: testCase.denial }));
     }
   });
+  it('returns the shared denial for every decode-phase precedence vector', () => {
+    expect(bundleDecodePrecedenceVectors.format).toBe('bcap1-bundle-decode-precedence-v1');
+    // The base must be accepted, or every case would pass vacuously.
+    expect(() =>
+      validateEvidenceBundle(structuredClone(bundleDecodePrecedenceVectors.base)),
+    ).not.toThrow();
+    for (const testCase of bundleDecodePrecedenceVectors.cases) {
+      const bundle: Record<string, unknown> = structuredClone(bundleDecodePrecedenceVectors.base);
+      for (const mutation of testCase.mutations as DecodeMutation[])
+        applyDecodeMutation(bundle, mutation);
+      expect(() => validateEvidenceBundle(bundle), testCase.id).toThrowError(
+        expect.objectContaining({ code: testCase.denial }),
+      );
+    }
+  });
   it('refuses frozen invalid bundle structures before authenticated transport exposure', () => {
     const { issue } = setup();
     const challenge = issue();
@@ -1357,4 +1373,35 @@ function vectorBundle(rejection: VectorBundleCase, challengeId: string) {
     components,
     bindingEdges,
   };
+}
+
+interface DecodeMutation {
+  op: 'set' | 'repeat' | 'cloneComponents' | 'cloneEdges';
+  path?: string;
+  value?: unknown;
+  character?: string;
+  count?: number;
+  prefix?: string;
+  suffix?: string;
+}
+
+/** Mirrors `apply_mutation` in rust/core/tests/vectors.rs. */
+function applyDecodeMutation(bundle: Record<string, unknown>, mutation: DecodeMutation): void {
+  if (mutation.op === 'cloneComponents' || mutation.op === 'cloneEdges') {
+    const key = mutation.op === 'cloneComponents' ? 'components' : 'bindingEdges';
+    const first = (bundle[key] as Record<string, unknown>[])[0]!;
+    bundle[key] = Array.from({ length: mutation.count! }, (_, index) => ({
+      ...structuredClone(first),
+      ...(mutation.op === 'cloneComponents' ? { componentId: `c${index}` } : {}),
+    }));
+    return;
+  }
+  const value =
+    mutation.op === 'set'
+      ? mutation.value
+      : `${mutation.prefix ?? ''}${mutation.character!.repeat(mutation.count!)}${mutation.suffix ?? ''}`;
+  const parts = mutation.path!.split('.');
+  let current = bundle as Record<string, unknown>;
+  for (const part of parts.slice(0, -1)) current = current[part] as Record<string, unknown>;
+  current[parts.at(-1)!] = value;
 }

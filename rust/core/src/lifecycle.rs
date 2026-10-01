@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -39,6 +39,44 @@ struct StoredChallenge {
     state: ChallengeState,
 }
 
+/// The default retention period for replay state. It is as conservative as
+/// BCAP1's maximum challenge lifetime; deployments with a larger trusted-clock
+/// skew must pass that value when constructing their in-memory stores.
+pub const DEFAULT_MAX_CLOCK_SKEW_MS: u64 = crate::MAX_CHALLENGE_TTL_MS;
+
+#[derive(Debug, Default)]
+struct VerificationPermits {
+    total: usize,
+    by_subject: HashMap<AttestationSubject, usize>,
+}
+
+static VERIFICATION_PERMITS: OnceLock<Mutex<VerificationPermits>> = OnceLock::new();
+
+/// RAII accounting for the process-wide, synchronous verification budget.
+pub(crate) struct VerificationPermit {
+    subject: AttestationSubject,
+}
+
+impl Drop for VerificationPermit {
+    fn drop(&mut self) {
+        // A poisoned accounting lock fails closed on subsequent acquisition.
+        // Drop cannot report that condition, so it must not invent a recovery.
+        let Some(pool) = VERIFICATION_PERMITS.get() else {
+            return;
+        };
+        let Ok(mut permits) = pool.lock() else {
+            return;
+        };
+        permits.total = permits.total.saturating_sub(1);
+        if let Some(count) = permits.by_subject.get_mut(&self.subject) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                permits.by_subject.remove(&self.subject);
+            }
+        }
+    }
+}
+
 /// Atomic one-shot challenge state.  The mutex is intentionally held only for
 /// transitions, never while provider verification runs.
 #[derive(Debug)]
@@ -46,6 +84,7 @@ pub struct ChallengeStore {
     challenges: Mutex<HashMap<String, StoredChallenge>>,
     max_outstanding_per_subject: usize,
     max_outstanding: usize,
+    max_clock_skew_ms: u64,
 }
 
 impl Default for ChallengeStore {
@@ -57,15 +96,32 @@ impl Default for ChallengeStore {
 impl ChallengeStore {
     pub const HARD_MAX_OUTSTANDING_PER_SUBJECT: usize = 8;
     pub const HARD_MAX_OUTSTANDING: usize = 100_000;
+    pub const HARD_MAX_VERIFICATIONS_PER_SUBJECT: usize = 2;
+    pub const HARD_MAX_VERIFICATIONS: usize = 64;
+    pub const HARD_MAX_TERMINAL_RECORDS: usize = 100_000;
 
     /// Creates a bounded store. Values above protocol hard maxima are clamped;
     /// deployments wanting configuration validation may use [`Self::try_new`].
     pub fn new(max_outstanding_per_subject: usize, max_outstanding: usize) -> Self {
+        Self::with_max_clock_skew(
+            max_outstanding_per_subject,
+            max_outstanding,
+            DEFAULT_MAX_CLOCK_SKEW_MS,
+        )
+    }
+
+    /// Configures expiry-plus-skew retention for terminal replay tombstones.
+    pub fn with_max_clock_skew(
+        max_outstanding_per_subject: usize,
+        max_outstanding: usize,
+        max_clock_skew_ms: u64,
+    ) -> Self {
         Self {
             challenges: Mutex::new(HashMap::new()),
             max_outstanding_per_subject: max_outstanding_per_subject
                 .min(Self::HARD_MAX_OUTSTANDING_PER_SUBJECT),
             max_outstanding: max_outstanding.min(Self::HARD_MAX_OUTSTANDING),
+            max_clock_skew_ms,
         }
     }
 
@@ -92,6 +148,7 @@ impl ChallengeStore {
             return Err(Denial::ChallengeExpired);
         }
         let mut challenges = self.challenges.lock().map_err(|_| Denial::InternalError)?;
+        self.prune_locked(&mut challenges, now_ms);
         if challenges.contains_key(challenge.challenge_id.as_str()) {
             return Err(Denial::Malformed);
         }
@@ -104,6 +161,7 @@ impl ChallengeStore {
                 )
             })
             .count();
+        let terminal_records = challenges.len().saturating_sub(outstanding);
         let by_subject = challenges
             .values()
             .filter(|record| {
@@ -114,7 +172,10 @@ impl ChallengeStore {
                     )
             })
             .count();
-        if outstanding >= self.max_outstanding || by_subject >= self.max_outstanding_per_subject {
+        if outstanding >= self.max_outstanding
+            || by_subject >= self.max_outstanding_per_subject
+            || terminal_records >= Self::HARD_MAX_TERMINAL_RECORDS
+        {
             return Err(Denial::ResourceLimit);
         }
         challenges.insert(
@@ -138,6 +199,7 @@ impl ChallengeStore {
         now_ms: u64,
     ) -> Result<Challenge, Denial> {
         let mut challenges = self.challenges.lock().map_err(|_| Denial::InternalError)?;
+        self.prune_locked(&mut challenges, now_ms);
         let record = challenges
             .get_mut(challenge_id)
             .ok_or(Denial::ChallengeUnknown)?;
@@ -208,16 +270,99 @@ impl ChallengeStore {
         Err(Denial::ClockUnavailable)
     }
 
+    /// Reserves the fixed protocol concurrency budget after a challenge has
+    /// been claimed but before provider work starts. Its RAII guard releases
+    /// accounting on every return path, including unwinding.
+    pub(crate) fn acquire_verification_permit(
+        &self,
+        subject: &AttestationSubject,
+    ) -> Result<VerificationPermit, Denial> {
+        let pool = VERIFICATION_PERMITS.get_or_init(|| Mutex::new(VerificationPermits::default()));
+        let mut permits = pool.lock().map_err(|_| Denial::InternalError)?;
+        let subject_count = permits.by_subject.get(subject).copied().unwrap_or_default();
+        if permits.total >= Self::HARD_MAX_VERIFICATIONS
+            || subject_count >= Self::HARD_MAX_VERIFICATIONS_PER_SUBJECT
+        {
+            return Err(Denial::ResourceLimit);
+        }
+        permits.total += 1;
+        permits
+            .by_subject
+            .insert(subject.clone(), subject_count + 1);
+        Ok(VerificationPermit {
+            subject: subject.clone(),
+        })
+    }
+
     pub fn state(&self, challenge_id: &str, now_ms: u64) -> Result<ChallengeState, Denial> {
         let mut challenges = self.challenges.lock().map_err(|_| Denial::InternalError)?;
+        self.prune_locked(&mut challenges, now_ms);
         let record = challenges
-            .get_mut(challenge_id)
+            .get(challenge_id)
             .ok_or(Denial::ChallengeUnknown)?;
-        if matches!(record.state, ChallengeState::Issued)
-            && now_ms >= record.challenge.expires_at_ms.get()
-        {
-            record.state = ChallengeState::Expired;
-        }
         Ok(record.state)
+    }
+
+    fn prune_locked(&self, challenges: &mut HashMap<String, StoredChallenge>, now_ms: u64) {
+        for record in challenges.values_mut() {
+            if matches!(record.state, ChallengeState::Issued)
+                && now_ms >= record.challenge.expires_at_ms.get()
+            {
+                record.state = ChallengeState::Expired;
+            }
+        }
+        challenges.retain(|_, record| {
+            matches!(
+                record.state,
+                ChallengeState::Issued | ChallengeState::Verifying
+            ) || now_ms
+                < record
+                    .challenge
+                    .expires_at_ms
+                    .get()
+                    .saturating_add(self.max_clock_skew_ms)
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subject(value: impl Into<String>) -> AttestationSubject {
+        AttestationSubject {
+            kind: "did".into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn verification_permits_enforce_subject_and_process_hard_limits() {
+        let store = ChallengeStore::new(1, 1);
+        let same_subject = subject("same-subject");
+        let first = store
+            .acquire_verification_permit(&same_subject)
+            .expect("first subject permit");
+        let second = store
+            .acquire_verification_permit(&same_subject)
+            .expect("second subject permit");
+        assert!(matches!(
+            store.acquire_verification_permit(&same_subject),
+            Err(Denial::ResourceLimit)
+        ));
+        drop((first, second));
+
+        let permits = (0..ChallengeStore::HARD_MAX_VERIFICATIONS)
+            .map(|index| {
+                store
+                    .acquire_verification_permit(&subject(format!("subject-{index}")))
+                    .expect("process permit")
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            store.acquire_verification_permit(&subject("one-too-many")),
+            Err(Denial::ResourceLimit)
+        ));
+        drop(permits);
     }
 }

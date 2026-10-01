@@ -11,6 +11,7 @@ import {
   utf8,
   validateString,
   validateSubject,
+  validateUnicodeScalars,
 } from './validation.js';
 import {
   Denial,
@@ -124,8 +125,11 @@ export function bindingDigestB64Url(challenge: AttestationChallengeV1): string {
 
 /** RFC 8785 JSON canonicalization for JSON values accepted by the core. */
 export function jcs(value: unknown): string {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string')
+  if (value === null || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'string') {
+    validateUnicodeScalars(value, 'JSON string');
     return JSON.stringify(value);
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new Denial('malformed', 'non-finite JSON number');
     return JSON.stringify(value);
@@ -134,7 +138,10 @@ export function jcs(value: unknown): string {
   if (!isRecord(value)) throw new Denial('malformed', 'non-JSON value');
   return `{${Object.keys(value)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${jcs(value[key])}`)
+    .map((key) => {
+      validateUnicodeScalars(key, 'JSON object key');
+      return `${JSON.stringify(key)}:${jcs(value[key])}`;
+    })
     .join(',')}}`;
 }
 

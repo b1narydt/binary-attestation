@@ -20,7 +20,9 @@ mod verify;
 
 pub use canonical::jcs_bytes;
 pub use denial::Denial;
-pub use lifecycle::{ChallengeState, ChallengeStore, Clock, SystemClock};
+pub use lifecycle::{
+    ChallengeState, ChallengeStore, Clock, DEFAULT_MAX_CLOCK_SKEW_MS, SystemClock,
+};
 pub use provider::{
     BindingRelationVerifier, EvidenceVerifier, PolicyDecision, PolicyEvaluator, ProviderRegistry,
     RelationRegistry,

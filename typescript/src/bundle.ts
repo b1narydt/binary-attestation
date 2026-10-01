@@ -54,12 +54,29 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
   if (encodedBundleUpperBound > 16 * 1024 * 1024)
     throw new Denial('resource_limit', 'bundle too large');
   const components = componentsRaw.map(validateComponent);
+  const componentIds = new Set<string>();
+  for (const component of components) {
+    if (componentIds.has(component.componentId))
+      throw new Denial('malformed', 'duplicate component ID');
+    componentIds.add(component.componentId);
+  }
+  const bindingEdges = edgesRaw?.map(validateEdge);
+  const edgeEndpoints = new Set<string>();
+  for (const edge of bindingEdges ?? []) {
+    if (!componentIds.has(edge.parentComponentId) || !componentIds.has(edge.childComponentId)) {
+      throw new Denial('malformed', 'binding edge references an unknown component');
+    }
+    const endpoints = `${edge.parentComponentId}\0${edge.childComponentId}`;
+    if (edgeEndpoints.has(endpoints))
+      throw new Denial('malformed', 'duplicate binding edge endpoints');
+    edgeEndpoints.add(endpoints);
+  }
   const bundle: EvidenceBundleV1 = {
     protocolVersion: 1,
     challengeId: requireString(value.challengeId, 'challengeId'),
     subject: validateSubject(value.subject),
     components,
-    ...(edgesRaw === undefined ? {} : { bindingEdges: edgesRaw.map(validateEdge) }),
+    ...(bindingEdges === undefined ? {} : { bindingEdges }),
   };
   decodeB64Url(bundle.challengeId, 'challengeId', 16);
   validateBundleBytes(bundle);
@@ -161,12 +178,10 @@ export async function verifyBundleComponents(input: {
   snapshot: SignedSecuritySnapshotV1;
   nowMs: bigint;
 }): Promise<VerifiedComponentV1[]> {
-  const { challenge, bundle, registry, snapshot, nowMs } = input;
-  const ids = new Set<string>();
-  for (const component of bundle.components) {
-    if (ids.has(component.componentId)) throw new Denial('malformed', 'duplicate component ID');
-    ids.add(component.componentId);
-  }
+  const { challenge, registry, snapshot, nowMs } = input;
+  // This helper is public and can be reached without AttestationCore. Validate
+  // the complete bundle before any provider plugin receives attacker input.
+  const bundle = validateEvidenceBundle(input.bundle);
   const expected = bindingDigest(challenge);
   const verified: VerifiedComponentV1[] = [];
   for (const component of bundle.components) {

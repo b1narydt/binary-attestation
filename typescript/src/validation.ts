@@ -16,7 +16,22 @@ const u64 = /^(?:0|[1-9][0-9]{0,19})$/u;
 const brc100 = /^[0-9a-f]{66}$/u;
 
 export function utf8(value: string): Uint8Array {
+  validateUnicodeScalars(value, 'text');
   return encoder.encode(value);
+}
+
+export function validateUnicodeScalars(value: string, name: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff)
+        throw new Denial('malformed', `${name} contains an unpaired UTF-16 surrogate`);
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new Denial('malformed', `${name} contains an unpaired UTF-16 surrogate`);
+    }
+  }
 }
 
 export function validateString(value: unknown, name: string, max = MAX_STRING_BYTES): string {
@@ -28,6 +43,7 @@ export function validateString(value: unknown, name: string, max = MAX_STRING_BY
   ) {
     throw new Denial('malformed', `${name} must be non-empty NFC text without NUL`);
   }
+  validateUnicodeScalars(value, name);
   if (utf8(value).byteLength > max) throw new Denial('resource_limit', `${name} is too long`);
   return value;
 }

@@ -63,6 +63,38 @@ fn two_component_bundle(edge_evidence: Vec<u8>, edges: usize) -> EvidenceBundle 
     }
 }
 
+fn bundle_with_distinct_edge_endpoints(edge_evidence: Vec<u8>, edges: usize) -> EvidenceBundle {
+    let challenge = challenge();
+    let mut component_ids = vec!["root".to_owned()];
+    component_ids.extend((0..edges).map(|index| format!("child-{index}")));
+    EvidenceBundle {
+        protocol_version: 1,
+        challenge_id: challenge.challenge_id,
+        subject: challenge.subject,
+        components: component_ids
+            .iter()
+            .map(|id| EvidenceComponent {
+                component_id: id.clone(),
+                provider: "fixture-v1".into(),
+                media_type: "application/fixture".into(),
+                evidence: B64Url::from_bytes(&[1]),
+                endorsements: None,
+                untrusted_metadata: None,
+            })
+            .collect(),
+        binding_edges: Some(
+            (0..edges)
+                .map(|index| EvidenceBindingEdge {
+                    parent_component_id: "root".into(),
+                    child_component_id: format!("child-{index}"),
+                    relation: "fixture-links-v1".into(),
+                    evidence: Some(B64Url::from_bytes(&edge_evidence)),
+                })
+                .collect(),
+        ),
+    }
+}
+
 #[test]
 fn edge_evidence_has_own_and_total_bundle_resource_limits() {
     assert!(matches!(
@@ -70,7 +102,7 @@ fn edge_evidence_has_own_and_total_bundle_resource_limits() {
         Err(Denial::ResourceLimit)
     ));
     assert!(matches!(
-        two_component_bundle(vec![0; MAX_BINDING_EDGE_EVIDENCE], 8).validate(),
+        bundle_with_distinct_edge_endpoints(vec![0; MAX_BINDING_EDGE_EVIDENCE], 8).validate(),
         Err(Denial::ResourceLimit)
     ));
 }

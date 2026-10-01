@@ -63,6 +63,17 @@ function string(value, label) {
   if (typeof value !== 'string' || value.includes('\0') || value.normalize('NFC') !== value) {
     fail(`${label} is not an NFC non-NUL string`);
   }
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff)
+        fail(`${label} contains an unpaired surrogate`);
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      fail(`${label} contains an unpaired surrogate`);
+    }
+  }
   if (Buffer.byteLength(value, 'utf8') > 1024) fail(`${label} exceeds 1,024 UTF-8 bytes`);
   return Buffer.from(value, 'utf8');
 }
@@ -86,7 +97,11 @@ function transcriptPreimage(input) {
   pushField(bytes(input.contextDigest, 32, 'contextDigest'));
   pushField(string(input.policyId, 'policyId'));
   pushField(bytes(input.policyDigest, 32, 'policyDigest'));
-  for (const [value, label] of [[input.securityEpoch, 'securityEpoch'], [input.issuedAtMs, 'issuedAtMs'], [input.expiresAtMs, 'expiresAtMs']]) {
+  for (const [value, label] of [
+    [input.securityEpoch, 'securityEpoch'],
+    [input.issuedAtMs, 'issuedAtMs'],
+    [input.expiresAtMs, 'expiresAtMs'],
+  ]) {
     if (label === 'issuedAtMs') pushField(bytes(input.trustDigest, 32, 'trustDigest'));
     const encoded = Buffer.alloc(8);
     encoded.writeBigUInt64BE(u64(value, label));
@@ -111,7 +126,8 @@ function setPath(object, path, value) {
 
 function rawTranscriptField(input, path) {
   const value = path.split('.').reduce((current, key) => current[key], input);
-  if (['challengeId', 'nonce', 'contextDigest', 'policyDigest', 'trustDigest'].includes(path)) return base64Url(value, path);
+  if (['challengeId', 'nonce', 'contextDigest', 'policyDigest', 'trustDigest'].includes(path))
+    return base64Url(value, path);
   if (['securityEpoch', 'issuedAtMs', 'expiresAtMs'].includes(path)) {
     const result = Buffer.alloc(8);
     result.writeBigUInt64BE(u64(value, path));
@@ -136,7 +152,10 @@ function hammingDistance(left, right) {
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
   }
   return JSON.stringify(value);
 }
@@ -153,7 +172,11 @@ function isDstackGpuEventOrder(events) {
     if (events[index++] !== name) return false;
   }
   if (events[index] === 'os-image-hash') index += 1;
-  return events[index++] === 'gpu-attestation' && events[index++] === 'key-provider' && index === events.length;
+  return (
+    events[index++] === 'gpu-attestation' &&
+    events[index++] === 'key-provider' &&
+    index === events.length
+  );
 }
 
 function modularPower(base, exponent, modulus) {
@@ -183,7 +206,11 @@ function verifyTranscript(vector) {
   for (const testCase of vector.valid) {
     const preimage = transcriptPreimage(testCase.input);
     equal(preimage.toString('hex'), testCase.preimageHex, `${testCase.id} preimage`);
-    equal(hash('sha512', preimage).toString('hex'), testCase.bindingDigestHex, `${testCase.id} binding digest`);
+    equal(
+      hash('sha512', preimage).toString('hex'),
+      testCase.bindingDigestHex,
+      `${testCase.id} binding digest`,
+    );
     cases.set(testCase.id, testCase);
   }
   for (const mutation of vector.mutations) {
@@ -193,21 +220,44 @@ function verifyTranscript(vector) {
     setPath(input, mutation.path, mutation.value);
     const preimage = transcriptPreimage(input);
     equal(preimage.toString('hex'), mutation.preimageHex, `${mutation.id} preimage`);
-    equal(hash('sha512', preimage).toString('hex'), mutation.bindingDigestHex, `${mutation.id} binding digest`);
-    if (mutation.bindingDigestHex === base.bindingDigestHex) fail(`${mutation.id} did not change the digest`);
-    if (hammingDistance(rawTranscriptField(base.input, mutation.path), rawTranscriptField(input, mutation.path)) !== 1) {
+    equal(
+      hash('sha512', preimage).toString('hex'),
+      mutation.bindingDigestHex,
+      `${mutation.id} binding digest`,
+    );
+    if (mutation.bindingDigestHex === base.bindingDigestHex)
+      fail(`${mutation.id} did not change the digest`);
+    if (
+      hammingDistance(
+        rawTranscriptField(base.input, mutation.path),
+        rawTranscriptField(input, mutation.path),
+      ) !== 1
+    ) {
       fail(`${mutation.id} is not a one-bit field mutation`);
     }
   }
   for (const rejection of vector.rejections) {
     if (!rejection.id || !rejection.reason) fail('transcript rejection lacks an id or reason');
-    if (rejection.id.startsWith('u64-') && (() => { try { u64(rejection.value, rejection.id); return true; } catch { return false; } })()) {
+    if (
+      rejection.id.startsWith('u64-') &&
+      (() => {
+        try {
+          u64(rejection.value, rejection.id);
+          return true;
+        } catch {
+          return false;
+        }
+      })()
+    ) {
       fail(`${rejection.id} was accepted as u64`);
     }
     if (rejection.id === 'base64-padding' || rejection.id === 'base64-alternate-alphabet') {
       if (B64URL.test(rejection.value)) fail(`${rejection.id} was accepted as base64url`);
     }
-    if (rejection.id === 'nfc-decomposed-alias' && rejection.value.normalize('NFC') === rejection.value) {
+    if (
+      rejection.id === 'nfc-decomposed-alias' &&
+      rejection.value.normalize('NFC') === rejection.value
+    ) {
       fail('decomposed NFC alias was accepted');
     }
     if (rejection.id === 'brc100-invalid-compressed-key' && validBrc100PublicKey(rejection.value)) {
@@ -221,16 +271,38 @@ function verifyTransport(vector) {
   for (const testCase of vector.valid) {
     const message = testCase.message;
     const payload = Buffer.from(testCase.payloadJcsUtf8, 'utf8');
-    equal(hash('sha256', payload).toString('hex'), testCase.payloadDigestHex, `${testCase.id} payload digest`);
-    equal(base64Url(message.payload, `${testCase.id} payload`).toString('utf8'), testCase.payloadJcsUtf8, `${testCase.id} payload bytes`);
-    equal(bytes(message.payloadDigest, 32, `${testCase.id} payloadDigest`).toString('hex'), testCase.payloadDigestHex, `${testCase.id} payloadDigest encoding`);
-    equal(canonicalJson(JSON.parse(testCase.payloadJcsUtf8)), testCase.payloadJcsUtf8, `${testCase.id} payload JCS`);
-    if (!sameSubject(message.sender, testCase.authenticatedPeer) || !sameSubject(message.recipient, testCase.authenticatedLocalSubject)) {
+    equal(
+      hash('sha256', payload).toString('hex'),
+      testCase.payloadDigestHex,
+      `${testCase.id} payload digest`,
+    );
+    equal(
+      base64Url(message.payload, `${testCase.id} payload`).toString('utf8'),
+      testCase.payloadJcsUtf8,
+      `${testCase.id} payload bytes`,
+    );
+    equal(
+      bytes(message.payloadDigest, 32, `${testCase.id} payloadDigest`).toString('hex'),
+      testCase.payloadDigestHex,
+      `${testCase.id} payloadDigest encoding`,
+    );
+    equal(
+      canonicalJson(JSON.parse(testCase.payloadJcsUtf8)),
+      testCase.payloadJcsUtf8,
+      `${testCase.id} payload JCS`,
+    );
+    if (
+      !sameSubject(message.sender, testCase.authenticatedPeer) ||
+      !sameSubject(message.recipient, testCase.authenticatedLocalSubject)
+    ) {
       fail(`${testCase.id} transport direction does not match authenticated provenance`);
     }
     const body = JSON.parse(testCase.payloadJcsUtf8);
     if (testCase.payloadType === 'challenge') {
-      if (!sameSubject(message.recipient, body.subject) || message.contextDigest !== body.contextDigest) {
+      if (
+        !sameSubject(message.recipient, body.subject) ||
+        message.contextDigest !== body.contextDigest
+      ) {
         fail('challenge envelope does not target the challenged subject/context');
       }
     } else if (testCase.payloadType === 'evidence' && !sameSubject(message.sender, body.subject)) {
@@ -238,7 +310,8 @@ function verifyTransport(vector) {
     }
   }
   for (const rejection of vector.rejections) {
-    if (!rejection.id || !rejection.base || !rejection.path || !rejection.reason) fail('transport rejection is incomplete');
+    if (!rejection.id || !rejection.base || !rejection.path || !rejection.reason)
+      fail('transport rejection is incomplete');
   }
 }
 
@@ -248,9 +321,19 @@ function verifySnapshot(vector) {
     equal(canonicalJson(testCase.body), testCase.bodyJcsUtf8, `${testCase.id} body JCS`);
     const digest = hash('sha256', Buffer.from(testCase.bodyJcsUtf8));
     equal(digest.toString('hex'), testCase.trustDigestHex, `${testCase.id} trust digest`);
-    equal(bytes(testCase.signedSnapshot.trustDigest, 32, `${testCase.id} trustDigest`).toString('hex'), testCase.trustDigestHex, `${testCase.id} trustDigest encoding`);
+    equal(
+      bytes(testCase.signedSnapshot.trustDigest, 32, `${testCase.id} trustDigest`).toString('hex'),
+      testCase.trustDigestHex,
+      `${testCase.id} trustDigest encoding`,
+    );
     for (const artifact of testCase.body.providerArtifacts) {
-      equal(hash('sha256', base64Url(artifact.content, `${testCase.id} artifact content`)).toString('hex'), bytes(artifact.digest, 32, `${testCase.id} artifact digest`).toString('hex'), `${testCase.id} artifact digest`);
+      equal(
+        hash('sha256', base64Url(artifact.content, `${testCase.id} artifact content`)).toString(
+          'hex',
+        ),
+        bytes(artifact.digest, 32, `${testCase.id} artifact digest`).toString('hex'),
+        `${testCase.id} artifact digest`,
+      );
     }
   }
 }
@@ -261,13 +344,52 @@ function verifyGpuPolicy(vector) {
     equal(canonicalJson(policy.source), policy.canonicalJcsUtf8, `${policy.id} JCS`);
     const source = Buffer.from(policy.canonicalJcsUtf8);
     equal(hash('sha256', source).toString('hex'), policy.digestHex, `${policy.id} digest`);
-    equal(base64Url(policy.contentBase64Url, `${policy.id} content`).toString('utf8'), policy.canonicalJcsUtf8, `${policy.id} content encoding`);
+    equal(
+      base64Url(policy.contentBase64Url, `${policy.id} content`).toString('utf8'),
+      policy.canonicalJcsUtf8,
+      `${policy.id} content encoding`,
+    );
   }
   for (const valid of vector.eventOrder.valid) {
-    if (!isDstackGpuEventOrder(valid.events)) fail(`${valid.id} is not a valid dstack GPU event order`);
+    if (!isDstackGpuEventOrder(valid.events))
+      fail(`${valid.id} is not a valid dstack GPU event order`);
   }
   for (const rejected of vector.eventOrder.rejected) {
-    if (isDstackGpuEventOrder(rejected.events)) fail(`${rejected.id} unexpectedly has a valid dstack GPU event order`);
+    if (isDstackGpuEventOrder(rejected.events))
+      fail(`${rejected.id} unexpectedly has a valid dstack GPU event order`);
+  }
+}
+
+function verifyCoreRejections(vector) {
+  equal(vector.format, 'bcap1-core-rejections-v1', 'core-rejection vector format');
+  for (const testCase of vector.unicode) {
+    if (!testCase.id || !testCase.field || !testCase.reason)
+      fail('Unicode rejection is incomplete');
+    const value = JSON.parse(testCase.valueJson);
+    let accepted = true;
+    try {
+      string(value, testCase.id);
+    } catch {
+      accepted = false;
+    }
+    if (accepted) fail(`${testCase.id} was accepted as UTF-8 scalar text`);
+  }
+  for (const testCase of vector.bundleRejections) {
+    if (testCase.denial !== 'malformed') fail(`${testCase.id} has an invalid denial`);
+    const ids = new Set();
+    let rejected = false;
+    for (const id of testCase.componentIds) {
+      if (ids.has(id)) rejected = true;
+      ids.add(id);
+    }
+    const endpoints = new Set();
+    for (const edge of testCase.edges) {
+      if (!ids.has(edge.parentComponentId) || !ids.has(edge.childComponentId)) rejected = true;
+      const key = `${edge.parentComponentId}\0${edge.childComponentId}`;
+      if (endpoints.has(key)) rejected = true;
+      endpoints.add(key);
+    }
+    if (!rejected) fail(`${testCase.id} does not exercise a rejected bundle structure`);
   }
 }
 
@@ -334,7 +456,8 @@ function verifySchemas(schemas, vectors, rejections) {
     const schema = schemas.get(rejection.schema);
     const validate = schema && ajv.getSchema(schema.$id);
     const fixture = rejectionFixture(rejection, vectors);
-    if (!validate || fixture === undefined) fail(`${rejection.id} has an unresolved schema or fixture`);
+    if (!validate || fixture === undefined)
+      fail(`${rejection.id} has an unresolved schema or fixture`);
     if (!validate(fixture)) {
       fail(`${rejection.id} starts from an invalid fixture: ${ajv.errorsText(validate.errors)}`);
     }
@@ -345,19 +468,30 @@ function verifySchemas(schemas, vectors, rejections) {
 }
 
 async function main() {
-  const schemaNames = ['common.schema.json', 'challenge.schema.json', 'evidence-bundle.schema.json', 'transport-message.schema.json', 'security-snapshot.schema.json'];
-  const schemas = new Map(await Promise.all(schemaNames.map(async (name) => [name, await readJson(specDir, name)])));
+  const schemaNames = [
+    'common.schema.json',
+    'challenge.schema.json',
+    'evidence-bundle.schema.json',
+    'transport-message.schema.json',
+    'security-snapshot.schema.json',
+  ];
+  const schemas = new Map(
+    await Promise.all(schemaNames.map(async (name) => [name, await readJson(specDir, name)])),
+  );
   const transcript = await readJson(vectorsDir, 'bcap1-transcript.json');
   const transport = await readJson(vectorsDir, 'bcap1-transport.json');
   const snapshot = await readJson(vectorsDir, 'bcap1-security-snapshot-jcs.json');
   const gpuPolicy = await readJson(vectorsDir, 'bcap1-dstack-gpu-policy-jcs.json');
+  const coreRejections = await readJson(vectorsDir, 'bcap1-core-rejections.json');
   verifyTranscript(transcript);
   verifyTransport(transport);
   verifySnapshot(snapshot);
   verifyGpuPolicy(gpuPolicy);
+  verifyCoreRejections(coreRejections);
   const rejections = await readJson(vectorsDir, 'bcap1-validation-rejections.json');
   equal(rejections.format, 'bcap1-schema-rejections-v1', 'schema-rejection vector format');
-  if (!Array.isArray(rejections.cases) || rejections.cases.length === 0) fail('schema rejection vectors are empty');
+  if (!Array.isArray(rejections.cases) || rejections.cases.length === 0)
+    fail('schema rejection vectors are empty');
   verifySchemas(schemas, { transcript, transport, snapshot }, rejections);
   process.stdout.write('BCAP1 vectors verified.\n');
 }

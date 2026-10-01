@@ -88,6 +88,22 @@ impl CoreVerifier {
             &input.bundle.subject,
             now_ms,
         )?;
+        let _permit = match self
+            .challenges
+            .acquire_verification_permit(&challenge.subject)
+        {
+            Ok(permit) => permit,
+            Err(denial) => {
+                return match self.challenges.finish(
+                    challenge.challenge_id.as_str(),
+                    Err(denial),
+                    now_ms,
+                ) {
+                    Err(terminal_denial) => Err(terminal_denial),
+                    Ok(()) => Err(denial),
+                };
+            }
+        };
         let result = self.verify_claimed(&challenge, input, now_ms);
         let terminal_now = match self.clock.now_ms() {
             Ok(now) => now,

@@ -35,6 +35,12 @@ type ChallengeState =
   | { state: 'CONSUMED_DENY'; challenge: AttestationChallengeV1; denial: Denial['code'] }
   | { state: 'EXPIRED'; challenge: AttestationChallengeV1 };
 
+// JavaScript modules are process singletons. Keep the protocol-wide permit
+// pool here rather than on AttestationCore so multiple core instances cannot
+// multiply the 2-per-subject / 64-per-process hard ceiling.
+let activeVerifications = 0;
+const activeVerificationsBySubject = new Map<string, number>();
+
 export interface Clock {
   nowMs(): bigint;
 }
@@ -44,17 +50,33 @@ export class InMemoryChallengeStore {
   readonly #states = new Map<string, ChallengeState>();
   readonly #maxPerSubject: number;
   readonly #maxTotal: number;
+  readonly #maxRetained: number;
+  readonly #replayRetentionMs: bigint;
 
-  constructor(limits: { maxOutstandingPerSubject?: number; maxOutstanding?: number } = {}) {
+  constructor(
+    limits: {
+      maxOutstandingPerSubject?: number;
+      maxOutstanding?: number;
+      maxRetained?: number;
+      replayRetentionMs?: bigint;
+    } = {},
+  ) {
     this.#maxPerSubject = limits.maxOutstandingPerSubject ?? 4;
     this.#maxTotal = limits.maxOutstanding ?? 10_000;
+    this.#maxRetained = limits.maxRetained ?? 100_000;
+    this.#replayRetentionMs = limits.replayRetentionMs ?? 300_000n;
     if (
       !Number.isInteger(this.#maxPerSubject) ||
       this.#maxPerSubject < 1 ||
       this.#maxPerSubject > 8 ||
       !Number.isInteger(this.#maxTotal) ||
       this.#maxTotal < 1 ||
-      this.#maxTotal > 100_000
+      this.#maxTotal > 100_000 ||
+      !Number.isInteger(this.#maxRetained) ||
+      this.#maxRetained < this.#maxTotal ||
+      this.#maxRetained > 100_000 ||
+      this.#replayRetentionMs < 0n ||
+      this.#replayRetentionMs > 300_000n
     ) {
       throw new Denial('resource_limit', 'invalid outstanding challenge limits');
     }
@@ -68,7 +90,9 @@ export class InMemoryChallengeStore {
       throw new Denial('malformed', 'challenge issue time is invalid');
     if (this.#states.has(stored.challengeId))
       throw new Denial('malformed', 'duplicate challenge ID');
-    this.expireIssued(nowMs);
+    this.prune(nowMs);
+    if (this.#states.size >= this.#maxRetained)
+      throw new Denial('resource_limit', 'retained challenge limit reached');
     const outstanding = [...this.#states.values()].filter(isOutstanding);
     if (
       outstanding.length >= this.#maxTotal ||
@@ -132,10 +156,14 @@ export class InMemoryChallengeStore {
     return state === undefined ? undefined : structuredClone(state);
   }
 
-  private expireIssued(nowMs: bigint): void {
+  private prune(nowMs: bigint): void {
     for (const [id, state] of this.#states) {
-      if (state.state === 'ISSUED' && nowMs >= parseU64(state.challenge.expiresAtMs, 'expiresAtMs'))
+      const expiresAt = parseU64(state.challenge.expiresAtMs, 'expiresAtMs');
+      if (state.state !== 'VERIFYING' && nowMs >= expiresAt + this.#replayRetentionMs) {
+        this.#states.delete(id);
+      } else if (state.state === 'ISSUED' && nowMs >= expiresAt) {
         this.#states.set(id, { state: 'EXPIRED', challenge: state.challenge });
+      }
     }
   }
 }
@@ -148,8 +176,20 @@ export class InMemoryChallengeStore {
 export class InMemorySecuritySnapshotStore implements SecuritySnapshotSource {
   #snapshot: SignedSecuritySnapshotV1 | undefined;
   readonly #admissions = new Map<string, VerifiedClaimsV1>();
+  readonly #maxAdmissions: number;
+  readonly #maxClockSkewMs: bigint;
 
-  constructor(snapshot?: SignedSecuritySnapshotV1) {
+  constructor(
+    snapshot?: SignedSecuritySnapshotV1,
+    maxAdmissions = 100_000,
+    maxClockSkewMs = 300_000n,
+  ) {
+    if (!Number.isInteger(maxAdmissions) || maxAdmissions < 1 || maxAdmissions > 100_000)
+      throw new Denial('resource_limit', 'invalid admission retention limit');
+    if (maxClockSkewMs < 0n || maxClockSkewMs > 300_000n)
+      throw new Denial('resource_limit', 'invalid maximum clock skew');
+    this.#maxAdmissions = maxAdmissions;
+    this.#maxClockSkewMs = maxClockSkewMs;
     if (snapshot) this.publish(snapshot);
   }
 
@@ -174,16 +214,27 @@ export class InMemorySecuritySnapshotStore implements SecuritySnapshotSource {
     nowMs: bigint,
     admission: { challengeId: string; claims: VerifiedClaimsV1 },
   ): void {
+    this.pruneAdmissions(nowMs);
     const snapshot = this.#snapshot;
     if (!snapshot || !snapshotIsValid(snapshot, nowMs)) throw new Denial('trust_snapshot_invalid');
     if (!snapshotMatches(expected, snapshot)) throw new Denial('security_epoch_changed');
     if (this.#admissions.has(admission.challengeId)) throw new Denial('challenge_used');
+    if (this.#admissions.size >= this.#maxAdmissions)
+      throw new Denial('resource_limit', 'admission retention limit reached');
     this.#admissions.set(admission.challengeId, structuredClone(admission.claims));
   }
 
-  admission(challengeId: string): VerifiedClaimsV1 | undefined {
+  admission(challengeId: string, nowMs?: bigint): VerifiedClaimsV1 | undefined {
+    if (nowMs !== undefined) this.pruneAdmissions(nowMs);
     const claims = this.#admissions.get(challengeId);
     return claims === undefined ? undefined : structuredClone(claims);
+  }
+
+  private pruneAdmissions(nowMs: bigint): void {
+    for (const [challengeId, claims] of this.#admissions) {
+      if (parseU64(claims.validUntilMs, 'validUntilMs') + this.#maxClockSkewMs <= nowMs)
+        this.#admissions.delete(challengeId);
+    }
   }
 }
 
@@ -203,6 +254,8 @@ export interface ChallengeRequest {
 
 export class AttestationCore {
   readonly maxTtlMs: bigint;
+  readonly #maxVerificationPerSubject: number;
+  readonly #maxVerifications: number;
   constructor(
     readonly snapshots: SecuritySnapshotSource,
     readonly registry: VerifierRegistry,
@@ -210,10 +263,23 @@ export class AttestationCore {
     readonly clock: Clock = systemClock,
     readonly random: (length: number) => Uint8Array = secureRandom,
     maxTtlMs = 300_000n,
+    verificationLimits: { maxPerSubject?: number; maxTotal?: number } = {},
   ) {
     if (maxTtlMs <= 0n || maxTtlMs > 300_000n)
       throw new Denial('resource_limit', 'invalid maximum challenge TTL');
     this.maxTtlMs = maxTtlMs;
+    this.#maxVerificationPerSubject = verificationLimits.maxPerSubject ?? 1;
+    this.#maxVerifications = verificationLimits.maxTotal ?? 16;
+    if (
+      !Number.isInteger(this.#maxVerificationPerSubject) ||
+      this.#maxVerificationPerSubject < 1 ||
+      this.#maxVerificationPerSubject > 2 ||
+      !Number.isInteger(this.#maxVerifications) ||
+      this.#maxVerifications < 1 ||
+      this.#maxVerifications > 64
+    ) {
+      throw new Denial('resource_limit', 'invalid verification concurrency limits');
+    }
   }
 
   issue(request: ChallengeRequest): AttestationChallengeV1 {
@@ -258,6 +324,7 @@ export class AttestationCore {
     authenticatedSubject: AttestationSubject;
     policy: PolicyEvaluator;
   }): Promise<VerificationDecision> {
+    let releaseVerification: (() => void) | undefined;
     try {
       const bundle = validateEvidenceBundle(input.bundle);
       const now = this.now();
@@ -269,6 +336,7 @@ export class AttestationCore {
         now,
       );
       try {
+        releaseVerification = this.acquireVerification(bundle.subject);
         const snapshot = this.currentSnapshot(now);
         this.requireSnapshotMatches(challenge, snapshot);
         if (
@@ -335,7 +403,31 @@ export class AttestationCore {
     } catch (error) {
       const denial = asDenial(error);
       return { decision: 'deny', denial: denial.code };
+    } finally {
+      releaseVerification?.();
     }
+  }
+
+  private acquireVerification(subject: AttestationSubject): () => void {
+    const key = `${subject.type.length}:${subject.type}${subject.value}`;
+    const activeForSubject = activeVerificationsBySubject.get(key) ?? 0;
+    if (
+      activeVerifications >= this.#maxVerifications ||
+      activeForSubject >= this.#maxVerificationPerSubject
+    ) {
+      throw new Denial('resource_limit', 'verification concurrency limit reached');
+    }
+    activeVerifications += 1;
+    activeVerificationsBySubject.set(key, activeForSubject + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeVerifications -= 1;
+      const remaining = (activeVerificationsBySubject.get(key) ?? 1) - 1;
+      if (remaining === 0) activeVerificationsBySubject.delete(key);
+      else activeVerificationsBySubject.set(key, remaining);
+    };
   }
 
   private currentSnapshot(now: bigint): SignedSecuritySnapshotV1 {

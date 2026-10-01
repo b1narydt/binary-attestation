@@ -1,0 +1,54 @@
+{
+  "format": "bcap1-core-rejections-v1",
+  "unicode": [
+    {
+      "id": "lone-high-surrogate",
+      "field": "audience",
+      "valueJson": "\"\\ud800\"",
+      "reason": "UTF-16 high surrogates without a paired low surrogate are not UTF-8 scalar text"
+    },
+    {
+      "id": "lone-low-surrogate",
+      "field": "audience",
+      "valueJson": "\"\\udc00\"",
+      "reason": "UTF-16 low surrogates without a paired high surrogate are not UTF-8 scalar text"
+    }
+  ],
+  "bundleRejections": [
+    {
+      "id": "duplicate-component-id",
+      "componentIds": ["root", "root"],
+      "edges": [],
+      "denial": "malformed"
+    },
+    {
+      "id": "dangling-edge",
+      "componentIds": ["root", "child"],
+      "edges": [
+        {
+          "parentComponentId": "missing",
+          "childComponentId": "child",
+          "relation": "relation-a"
+        }
+      ],
+      "denial": "malformed"
+    },
+    {
+      "id": "duplicate-edge-endpoints-different-relation",
+      "componentIds": ["root", "child"],
+      "edges": [
+        {
+          "parentComponentId": "root",
+          "childComponentId": "child",
+          "relation": "relation-a"
+        },
+        {
+          "parentComponentId": "root",
+          "childComponentId": "child",
+          "relation": "relation-b"
+        }
+      ],
+      "denial": "malformed"
+    }
+  ]
+}

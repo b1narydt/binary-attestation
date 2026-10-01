@@ -1,6 +1,6 @@
 use binary_attestation_core::{
-    AttestationSubject, Challenge, SignedSecuritySnapshot, TransportMessage, binding_digest,
-    jcs_bytes,
+    AttestationSubject, B64Url, Challenge, Denial, EvidenceBindingEdge, EvidenceBundle,
+    EvidenceComponent, SignedSecuritySnapshot, TransportMessage, binding_digest, jcs_bytes,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -169,6 +169,69 @@ fn transport_kats_decode_only_with_authenticated_identities_and_digest() {
             )
             .as_ref(),
             hex_decode(vector["payloadDigestHex"].as_str().expect("digest"))
+        );
+    }
+}
+
+#[test]
+fn core_rejection_vectors_refuse_duplicate_edges_and_invalid_unicode() {
+    let vectors: Value =
+        serde_json::from_str(include_str!("../../../vectors/bcap1-core-rejections.json"))
+            .expect("vectors");
+    assert_eq!(vectors["format"].as_str(), Some("bcap1-core-rejections-v1"));
+    for unicode in vectors["unicode"].as_array().expect("unicode") {
+        assert!(
+            serde_json::from_str::<String>(unicode["valueJson"].as_str().expect("valueJson"))
+                .is_err(),
+            "{}",
+            unicode["id"]
+        );
+    }
+    for rejection in vectors["bundleRejections"]
+        .as_array()
+        .expect("bundleRejections")
+    {
+        let components = rejection["componentIds"]
+            .as_array()
+            .expect("component ids")
+            .iter()
+            .map(|id| EvidenceComponent {
+                component_id: id.as_str().expect("component id").to_owned(),
+                provider: "fixture-v1".into(),
+                media_type: "application/fixture".into(),
+                evidence: B64Url::from_bytes(&[1]),
+                endorsements: None,
+                untrusted_metadata: None,
+            })
+            .collect();
+        let edges = rejection["edges"]
+            .as_array()
+            .expect("edges")
+            .iter()
+            .map(|edge| EvidenceBindingEdge {
+                parent_component_id: edge["parentComponentId"]
+                    .as_str()
+                    .expect("parent")
+                    .to_owned(),
+                child_component_id: edge["childComponentId"].as_str().expect("child").to_owned(),
+                relation: edge["relation"].as_str().expect("relation").to_owned(),
+                evidence: None,
+            });
+        let bundle = EvidenceBundle {
+            protocol_version: 1,
+            challenge_id: B64Url::from_bytes(&[0; 16]),
+            subject: AttestationSubject {
+                kind: "did".into(),
+                value: "peer".into(),
+            },
+            components,
+            binding_edges: Some(edges.collect()),
+        };
+        assert_eq!(
+            bundle.validate(),
+            Err(Denial::Malformed),
+            "{}",
+            rejection["id"]
         );
     }
 }

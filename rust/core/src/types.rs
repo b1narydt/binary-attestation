@@ -188,7 +188,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, Denial> {
     Ok(output)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttestationSubject {
     #[serde(rename = "type")]
@@ -452,8 +452,15 @@ impl EvidenceBundle {
         if edges.len() > MAX_BINDING_EDGES {
             return Err(Denial::ResourceLimit);
         }
+        let mut edge_endpoints = HashSet::new();
         for edge in edges {
             edge.validate()?;
+            // Relations describe how an already-selected parent/child pair is
+            // authenticated; they do not make a second edge between that pair
+            // distinct. Reject before transport/provider exposure.
+            if !edge_endpoints.insert((&edge.parent_component_id, &edge.child_component_id)) {
+                return Err(Denial::Malformed);
+            }
             if !ids.contains(&edge.parent_component_id) || !ids.contains(&edge.child_component_id) {
                 return Err(Denial::Malformed);
             }

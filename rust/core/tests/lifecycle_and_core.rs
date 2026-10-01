@@ -1,27 +1,43 @@
 use std::{
     sync::{
         Arc, Barrier,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
+    time::Duration,
 };
 
 use binary_attestation_core::{
     B64Url, BindingRelationVerifier, Challenge, ChallengeState, ChallengeStore, Clock,
     CoreVerifier, Denial, EvidenceBindingEdge, EvidenceBundle, EvidenceComponent, EvidenceVerifier,
     InMemorySnapshotStore, PolicyDecision, PolicyEvaluator, ProviderRegistry, RelationRegistry,
-    SignedSecuritySnapshot, VerificationInput, VerifiedComponent,
+    SecuritySnapshotStore, SignedSecuritySnapshot, VerificationInput, VerifiedComponent,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+static TEST_SUBJECT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn base_challenge() -> Challenge {
-    serde_json::from_str(include_str!("../../../vectors/bcap1-transcript.json"))
-        .ok()
-        .and_then(|value: serde_json::Value| {
-            serde_json::from_value(value["valid"][0]["input"].clone()).ok()
-        })
-        .expect("challenge fixture")
+    let mut challenge: Challenge =
+        serde_json::from_str(include_str!("../../../vectors/bcap1-transcript.json"))
+            .ok()
+            .and_then(|value: serde_json::Value| {
+                serde_json::from_value(value["valid"][0]["input"].clone()).ok()
+            })
+            .expect("challenge fixture");
+    // Parallel integration tests model separate relying-party test subjects.
+    // This prevents unrelated fixtures from consuming one another's real
+    // process-wide per-subject verification budget.
+    challenge.subject = binary_attestation_core::AttestationSubject {
+        kind: "did".into(),
+        value: format!(
+            "test-subject-{}",
+            TEST_SUBJECT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
+    };
+    challenge
 }
 
 #[test]
@@ -132,6 +148,73 @@ fn limits_release_capacity_after_terminal_state_and_future_issue_refuses() {
     ));
 }
 
+#[test]
+fn issue_reclaims_expired_issued_records_without_state_access() {
+    let first = base_challenge();
+    let mut second = first.clone();
+    second.challenge_id = B64Url::from_bytes(&[7; 16]);
+    second.expires_at_ms = serde_json::from_str("\"10\"").expect("u64");
+    let store = ChallengeStore::new(1, 1);
+    store.issue(first, 1).expect("first");
+
+    // `issue` itself must transition the old ISSUED record before counting
+    // quota; callers are not required to poll `state` to reclaim capacity.
+    store.issue(second, 2).expect("expired record reclaimed");
+}
+
+#[test]
+fn terminal_challenge_tombstones_are_skew_retained_then_pruned() {
+    let first = base_challenge();
+    let store = ChallengeStore::with_max_clock_skew(1, 2, 2);
+    store.issue(first.clone(), 1).expect("issue");
+    store
+        .begin(
+            first.challenge_id.as_str(),
+            &first.subject,
+            &first.subject,
+            1,
+        )
+        .expect("claim");
+    assert_eq!(
+        store.finish(
+            first.challenge_id.as_str(),
+            Err(Denial::SignatureInvalid),
+            1
+        ),
+        Err(Denial::SignatureInvalid)
+    );
+
+    // The terminal replay tombstone remains through expiresAt + skew.
+    assert_eq!(
+        store.state(first.challenge_id.as_str(), 3),
+        Ok(ChallengeState::ConsumedDeny(Denial::SignatureInvalid))
+    );
+    assert_eq!(
+        store.state(first.challenge_id.as_str(), 4),
+        Err(Denial::ChallengeUnknown)
+    );
+}
+
+#[test]
+fn admission_tombstones_are_skew_retained_then_pruned() {
+    let (snapshot, first) = snapshot_and_challenge(2);
+    let snapshots = InMemorySnapshotStore::with_max_clock_skew(2);
+    snapshots.publish(snapshot).expect("publish");
+    snapshots.terminal_fence(&first, 1).expect("first allow");
+
+    // A reused ID remains fenced through expiry plus skew, even when a newer
+    // challenge with that ID would otherwise be valid at the supplied time.
+    let mut later = first.clone();
+    later.expires_at_ms = serde_json::from_str("\"10\"").expect("u64");
+    assert_eq!(
+        snapshots.terminal_fence(&later, 3),
+        Err(Denial::ChallengeUsed)
+    );
+    snapshots
+        .terminal_fence(&later, 4)
+        .expect("expired admission pruned after skew");
+}
+
 #[derive(Default)]
 struct ManualClock(AtomicU64);
 impl ManualClock {
@@ -149,6 +232,50 @@ struct FixtureVerifier {
     clock: Option<Arc<ManualClock>>,
     advance_to: u64,
     valid_until: u64,
+}
+
+struct BlockingVerifier {
+    entered: mpsc::Sender<()>,
+    release: Arc<Barrier>,
+    blocking_calls: AtomicUsize,
+}
+impl EvidenceVerifier for BlockingVerifier {
+    fn provider(&self) -> &'static str {
+        "fixture-v1"
+    }
+    fn verify(
+        &self,
+        component: &EvidenceComponent,
+        expected: [u8; 64],
+        _now: u64,
+    ) -> Result<VerifiedComponent, Denial> {
+        // Block only the first component of each of the first two requests.
+        // That keeps both permits occupied while the third request is claimed.
+        if self.blocking_calls.fetch_add(1, Ordering::SeqCst) < 2 {
+            self.entered.send(()).map_err(|_| Denial::InternalError)?;
+            self.release.wait();
+        }
+        Ok(VerifiedComponent {
+            component_id: component.component_id.clone(),
+            provider: component.provider.clone(),
+            evidence_digest: B64Url::from_bytes(&Sha256::digest(
+                component
+                    .evidence
+                    .decode_with_limit(binary_attestation_core::MAX_COMPONENT_EVIDENCE)
+                    .expect("bounded evidence"),
+            )),
+            binding_digest: if component.component_id == "parent" {
+                B64Url::from_bytes(&expected)
+            } else {
+                B64Url::from_bytes(&[0; 64])
+            },
+            platform: Default::default(),
+            measurements: Default::default(),
+            tcb: Default::default(),
+            advisories: vec![],
+            valid_until_ms: serde_json::from_str("\"100\"").expect("u64"),
+        })
+    }
 }
 impl EvidenceVerifier for FixtureVerifier {
     fn provider(&self) -> &'static str {
@@ -305,6 +432,105 @@ fn core_with_validity(
         ),
         challenges,
     )
+}
+
+fn concurrency_core(
+    snapshot: SignedSecuritySnapshot,
+    clock: Arc<ManualClock>,
+    provider: Arc<dyn EvidenceVerifier>,
+) -> (CoreVerifier, Arc<ChallengeStore>) {
+    let snapshots = Arc::new(InMemorySnapshotStore::new());
+    snapshots.publish(snapshot).expect("publish");
+    let challenges = Arc::new(ChallengeStore::new(8, 10));
+    let providers = Arc::new(ProviderRegistry::new());
+    providers.register(provider).expect("provider");
+    let relations = Arc::new(RelationRegistry::new());
+    relations
+        .register(Arc::new(FixtureRelation))
+        .expect("relation");
+    (
+        CoreVerifier::with_clock(
+            challenges.clone(),
+            snapshots,
+            providers,
+            relations,
+            Arc::new(AllowPolicy(100)),
+            clock,
+        ),
+        challenges,
+    )
+}
+
+#[test]
+fn verification_concurrency_is_bounded_and_permits_are_released() {
+    let clock = Arc::new(ManualClock::default());
+    clock.set(1);
+    let (snapshot, mut base) = snapshot_and_challenge(100);
+    // Test the subject-scoped limit without contending with the fixture
+    // subject used by independent tests running in parallel.
+    base.subject.value = "concurrency-subject".into();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let release = Arc::new(Barrier::new(3));
+    let provider: Arc<dyn EvidenceVerifier> = Arc::new(BlockingVerifier {
+        entered: entered_tx,
+        release: release.clone(),
+        blocking_calls: AtomicUsize::new(0),
+    });
+    let (core, store) = concurrency_core(snapshot, clock, provider);
+    let core = Arc::new(core);
+
+    let mut challenges = Vec::new();
+    for byte in 1..=4 {
+        let mut challenge = base.clone();
+        challenge.challenge_id = B64Url::from_bytes(&[byte; 16]);
+        store.issue(challenge.clone(), 1).expect("issue");
+        challenges.push(challenge);
+    }
+    let mut handles = Vec::new();
+    for challenge in challenges.iter().take(2).cloned() {
+        let core = core.clone();
+        handles.push(thread::spawn(move || {
+            core.verify(VerificationInput {
+                authenticated_subject: &challenge.subject,
+                bundle: &bundle(&challenge, true),
+                transport_context_digest: &challenge.context_digest,
+            })
+        }));
+    }
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first verification entered provider");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second verification entered provider");
+
+    let third = &challenges[2];
+    assert!(matches!(
+        core.verify(VerificationInput {
+            authenticated_subject: &third.subject,
+            bundle: &bundle(third, true),
+            transport_context_digest: &third.context_digest,
+        }),
+        Err(Denial::ResourceLimit)
+    ));
+    assert_eq!(
+        store.state(third.challenge_id.as_str(), 1),
+        Ok(ChallengeState::ConsumedDeny(Denial::ResourceLimit))
+    );
+
+    release.wait();
+    for handle in handles {
+        assert!(handle.join().expect("thread").is_ok());
+    }
+    let fourth = &challenges[3];
+    assert!(
+        core.verify(VerificationInput {
+            authenticated_subject: &fourth.subject,
+            bundle: &bundle(fourth, true),
+            transport_context_digest: &fourth.context_digest,
+        })
+        .is_ok()
+    );
 }
 
 #[test]

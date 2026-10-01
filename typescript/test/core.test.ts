@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import snapshotVectors from '../../vectors/bcap1-security-snapshot-jcs.json' with { type: 'json' };
+import coreRejectionVectors from '../../vectors/bcap1-core-rejections.json' with { type: 'json' };
 import transcriptVectors from '../../vectors/bcap1-transcript.json' with { type: 'json' };
 import transportVectors from '../../vectors/bcap1-transport.json' with { type: 'json' };
 
@@ -60,9 +61,9 @@ function snapshot(epoch = '1', policyDigest = bytes(32, 2)): SignedSecuritySnaps
   };
 }
 
-function setup(now = 1_000n) {
+function setup(now = 1_000n, maxClockSkewMs = 300_000n) {
   let current = snapshot();
-  const snapshots = new InMemorySecuritySnapshotStore(current);
+  const snapshots = new InMemorySecuritySnapshotStore(current, 100_000, maxClockSkewMs);
   let clock = now;
   let randomByte = 9;
   const registry = new VerifierRegistry().registerProvider({
@@ -259,6 +260,21 @@ describe('BCAP1 A0 strict validation', () => {
         subject: { type: 'brc100-public-key', value: `02${'00'.repeat(32)}` },
       }),
     ).toThrow(Denial);
+  });
+
+  it('consumes frozen non-scalar Unicode rejection vectors without replacement collisions', () => {
+    const base = transcriptVectors.valid.find((vector) => vector.id === 'zero-minimum')!.input;
+    for (const rejection of coreRejectionVectors.unicode) {
+      const input = structuredClone(base) as Record<string, unknown>;
+      const value = JSON.parse(rejection.valueJson) as string;
+      setPath(input, rejection.field, value);
+      expect(() => validateChallenge(input), rejection.id).toThrowError(
+        expect.objectContaining({ code: 'malformed' }),
+      );
+      expect(() => jcsBytes(value), rejection.id).toThrowError(
+        expect.objectContaining({ code: 'malformed' }),
+      );
+    }
   });
 
   it('uses a fixed field-length transcript where each mutation changes the digest', () => {
@@ -531,9 +547,11 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
       );
       expect(decode).not.toHaveBeenCalled();
 
+      let verifyCalls = 0;
       const registry = new VerifierRegistry().registerProvider({
         provider: 'portable-test',
         async verify(source, expectedBinding) {
+          verifyCalls += 1;
           return {
             componentId: source.componentId,
             provider: source.provider,
@@ -556,6 +574,7 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
           nowMs: 1_000n,
         }),
       ).rejects.toMatchObject({ code: 'resource_limit' });
+      expect(verifyCalls).toBe(0);
       expect(
         decode.mock.calls.some(
           ([encoded]) =>
@@ -565,6 +584,138 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     } finally {
       decode.mockRestore();
     }
+  });
+
+  it('applies bounded verification backpressure and releases permits on completion', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const providerEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let firstCall = true;
+    const snapshots = new InMemorySecuritySnapshotStore(snapshot());
+    const registry = new VerifierRegistry().registerProvider({
+      provider: 'slow',
+      async verify(component, expectedBinding) {
+        if (firstCall) {
+          firstCall = false;
+          entered();
+          await gate;
+        }
+        return {
+          componentId: component.componentId,
+          provider: component.provider,
+          evidenceDigest: evidenceDigest(component),
+          bindingDigest: encodeB64Url(expectedBinding),
+          platform: {},
+          measurements: {},
+          tcb: {},
+          advisories: [],
+          validUntilMs: '9000',
+        };
+      },
+    });
+    let randomByte = 20;
+    const core = new AttestationCore(
+      snapshots,
+      registry,
+      undefined,
+      { nowMs: () => 1_000n },
+      (length) => new Uint8Array(length).fill(randomByte++),
+      300_000n,
+      { maxPerSubject: 2, maxTotal: 1 },
+    );
+    const issue = () =>
+      core.issue({
+        subject,
+        audience: 'https://rp.example',
+        context: 'urn:concurrency',
+        contextDigest: bytes(32, 4),
+        policyId: snapshot().body.policyId,
+        policyDigest: snapshot().body.policyDigest,
+        ttlMs: 100n,
+      });
+    const bundle = (challenge: AttestationChallengeV1) => ({
+      protocolVersion: 1 as const,
+      challengeId: challenge.challengeId,
+      subject,
+      components: [
+        {
+          componentId: 'cpu',
+          provider: 'slow',
+          mediaType: 'application/test',
+          evidence: bytes(1),
+        },
+      ],
+    });
+    const policy: PolicyEvaluator = {
+      policyId: snapshot().body.policyId,
+      policyDigest: snapshot().body.policyDigest,
+      async evaluate() {
+        return { subjectBinding: 'brc103', validUntilMs: '8000' };
+      },
+    };
+    const firstChallenge = issue();
+    const secondChallenge = issue();
+    const first = core.verify({
+      bundle: bundle(firstChallenge),
+      authenticatedSubject: subject,
+      policy,
+    });
+    await providerEntered;
+    let otherRandomByte = 70;
+    const otherCore = new AttestationCore(
+      new InMemorySecuritySnapshotStore(snapshot()),
+      registry,
+      undefined,
+      { nowMs: () => 1_000n },
+      (length) => new Uint8Array(length).fill(otherRandomByte++),
+      300_000n,
+      { maxPerSubject: 2, maxTotal: 1 },
+    );
+    const otherChallenge = otherCore.issue({
+      subject,
+      audience: 'https://rp.example',
+      context: 'urn:concurrency',
+      contextDigest: bytes(32, 4),
+      policyId: snapshot().body.policyId,
+      policyDigest: snapshot().body.policyDigest,
+      ttlMs: 100n,
+    });
+    expect(
+      await otherCore.verify({
+        bundle: bundle(otherChallenge),
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ decision: 'deny', denial: 'resource_limit' });
+    expect(
+      await core.verify({
+        bundle: bundle(secondChallenge),
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ decision: 'deny', denial: 'resource_limit' });
+    release();
+    expect(await first).toMatchObject({ decision: 'allow' });
+    expect(
+      await core.verify({
+        bundle: bundle(secondChallenge),
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ decision: 'deny', denial: 'challenge_used' });
+    const thirdChallenge = issue();
+    expect(
+      await core.verify({
+        bundle: bundle(thirdChallenge),
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ decision: 'allow' });
   });
 
   it('accepts indirect bindings only through a registered edge and refuses invalid graphs', async () => {
@@ -642,7 +793,7 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
         authenticatedSubject: subject,
         policy: fixture.policy,
       }),
-    ).toMatchObject({ denial: 'component_unbound' });
+    ).toMatchObject({ denial: 'malformed' });
     const duplicate = fixture.issue();
     expect(
       await fixture.core.verify({
@@ -709,6 +860,42 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     const released = { ...first, challengeId: bytes(16, 13), issuedAtMs: '2', expiresAtMs: '3' };
     store.issue(released, 2n); // expiry sweeps the outstanding entry
   });
+
+  it('bounds retained challenges and prunes expired challenge and admission records', async () => {
+    const retained = new InMemoryChallengeStore({
+      maxOutstandingPerSubject: 1,
+      maxOutstanding: 1,
+      maxRetained: 1,
+      replayRetentionMs: 0n,
+    });
+    const { issue } = setup();
+    const first = issue();
+    retained.issue(first, 1_000n);
+    retained.claim(first.challengeId, subject, subject, 1_000n);
+    retained.deny(first.challengeId, 'policy_mismatch');
+    const blocked = { ...first, challengeId: bytes(16, 31) };
+    expect(() => retained.issue(blocked, 1_000n)).toThrowError(
+      expect.objectContaining({ code: 'resource_limit' }),
+    );
+    const afterExpiry = {
+      ...first,
+      challengeId: bytes(16, 32),
+      issuedAtMs: '1100',
+      expiresAtMs: '1200',
+    };
+    retained.issue(afterExpiry, 1_100n);
+
+    const fixture = setup(1_000n, 0n);
+    const admitted = fixture.issue();
+    const result = await fixture.core.verify({
+      bundle: fixture.bundle(admitted),
+      authenticatedSubject: subject,
+      policy: fixture.policy,
+    });
+    if (result.decision !== 'allow') throw new Error('expected admission');
+    expect(fixture.snapshots.admission(admitted.challengeId)).toBeDefined();
+    expect(fixture.snapshots.admission(admitted.challengeId, 1_100n)).toBeUndefined();
+  });
 });
 
 describe('BCAP1 transport and browser boundary', () => {
@@ -750,6 +937,50 @@ describe('BCAP1 transport and browser boundary', () => {
           : {}),
       });
       expect(output.messageId).toBe(vector.message.messageId);
+    }
+  });
+  it('refuses frozen invalid bundle structures before authenticated transport exposure', () => {
+    const { issue } = setup();
+    for (const rejection of coreRejectionVectors.bundleRejections) {
+      const challenge = issue();
+      const bundle = {
+        protocolVersion: 1 as const,
+        challengeId: challenge.challengeId,
+        subject,
+        components: rejection.componentIds.map((componentId) => ({
+          componentId,
+          provider: 'portable-test',
+          mediaType: 'application/test',
+          evidence: bytes(1),
+        })),
+        bindingEdges: rejection.edges,
+      };
+      expect(() => validateEvidenceBundle(bundle), rejection.id).toThrowError(
+        expect.objectContaining({ code: rejection.denial }),
+      );
+      const payload = jcsBytes(bundle);
+      expect(
+        () =>
+          validateTransportMessage({
+            message: {
+              protocolVersion: 1,
+              messageType: 'evidence',
+              messageId: bytes(16, 90),
+              sender: subject,
+              recipient: wrongSubject,
+              contextDigest: challenge.contextDigest,
+              payloadEncoding: 'rfc8785-jcs',
+              payload: encodeB64Url(payload),
+              payloadDigest: encodeB64Url(sha256Bytes(payload)),
+            },
+            authenticatedPeer: subject,
+            localSubject: wrongSubject,
+            profile: 'brc103-websocket-v1',
+            expectedType: 'evidence',
+            expectedEvidenceContextDigest: challenge.contextDigest,
+          }),
+        rejection.id,
+      ).toThrowError(expect.objectContaining({ code: rejection.denial }));
     }
   });
   it('requires the authenticated peer, recipient, digest, and exact JCS payload', () => {

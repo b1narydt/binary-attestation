@@ -18,11 +18,13 @@ import {
   evidenceDigest,
   encodeB64Url,
   jcsBytes,
+  MAX_EVIDENCE_BYTES,
   sha256Bytes,
   validateSecuritySnapshot,
   validateChallenge,
   validateEvidenceBundle,
   validateTransportMessage,
+  verifyBundleComponents,
   type AttestationChallengeV1,
   type EvidenceComponentV1,
   type PolicyEvaluator,
@@ -515,6 +517,56 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     ).toThrow(Denial);
   });
 
+  it('bounds evidence at both exported helper entry points before decoding the payload', async () => {
+    const fixture = setup();
+    const challenge = fixture.issue();
+    const component = {
+      ...fixture.bundle(challenge).components[0]!,
+      evidence: oversizedBase64Url(MAX_EVIDENCE_BYTES),
+    };
+    const decode = vi.spyOn(globalThis, 'atob');
+    try {
+      expect(() => evidenceDigest(component)).toThrowError(
+        expect.objectContaining({ code: 'resource_limit' }),
+      );
+      expect(decode).not.toHaveBeenCalled();
+
+      const registry = new VerifierRegistry().registerProvider({
+        provider: 'portable-test',
+        async verify(source, expectedBinding) {
+          return {
+            componentId: source.componentId,
+            provider: source.provider,
+            evidenceDigest: bytes(32, 0),
+            bindingDigest: encodeB64Url(expectedBinding),
+            platform: {},
+            measurements: {},
+            tcb: {},
+            advisories: [],
+            validUntilMs: '9000',
+          };
+        },
+      });
+      await expect(
+        verifyBundleComponents({
+          challenge,
+          bundle: { ...fixture.bundle(challenge), components: [component] },
+          registry,
+          snapshot: snapshot(),
+          nowMs: 1_000n,
+        }),
+      ).rejects.toMatchObject({ code: 'resource_limit' });
+      expect(
+        decode.mock.calls.some(
+          ([encoded]) =>
+            typeof encoded === 'string' && encoded.length > Math.ceil((MAX_EVIDENCE_BYTES * 4) / 3),
+        ),
+      ).toBe(false);
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
   it('accepts indirect bindings only through a registered edge and refuses invalid graphs', async () => {
     const fixture = setup();
     fixture.core.registry
@@ -803,6 +855,6 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
   current[parts.at(-1)!] = value;
 }
 
-function oversizedBase64Url(): string {
-  return 'A'.repeat(Math.ceil(((16 * 1024 * 1024 + 1) * 4) / 3));
+function oversizedBase64Url(maxBytes = 16 * 1024 * 1024): string {
+  return 'A'.repeat(Math.ceil(((maxBytes + 1) * 4) / 3));
 }

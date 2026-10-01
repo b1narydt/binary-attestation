@@ -7,6 +7,7 @@ import {
   hasOnly,
   hasOnlyOptional,
   isRecord,
+  MAX_EVIDENCE_BYTES,
   parseU64,
   requireString,
   validateString,
@@ -81,7 +82,7 @@ function validateComponent(value: unknown): EvidenceComponentV1 {
       ? {}
       : { untrustedMetadata: validateMetadata(value.untrustedMetadata) }),
   };
-  decodeB64Url(component.evidence, 'evidence', undefined, 2 * 1024 * 1024);
+  decodeB64Url(component.evidence, 'evidence', undefined, MAX_EVIDENCE_BYTES);
   if (component.endorsements !== undefined)
     decodeB64Url(component.endorsements, 'endorsements', undefined, 4 * 1024 * 1024);
   return component;
@@ -108,7 +109,7 @@ function validateEdge(value: unknown): EvidenceBindingEdgeV1 {
       : { evidence: requireString(value.evidence, 'edge evidence') }),
   };
   if (edge.evidence !== undefined)
-    decodeB64Url(edge.evidence, 'edge evidence', undefined, 2 * 1024 * 1024);
+    decodeB64Url(edge.evidence, 'edge evidence', undefined, MAX_EVIDENCE_BYTES);
   return edge;
 }
 
@@ -214,8 +215,9 @@ function validateVerifiedComponent(
   };
   if (component.componentId !== source.componentId || component.provider !== source.provider)
     throw new Denial('malformed', 'verifier output does not match component');
+  const sourceEvidence = decodeB64Url(source.evidence, 'evidence', undefined, MAX_EVIDENCE_BYTES);
   const reportedEvidenceDigest = decodeB64Url(component.evidenceDigest, 'evidenceDigest', 32);
-  if (!equalBytes(reportedEvidenceDigest, sha256Bytes(decodeB64Url(source.evidence, 'evidence'))))
+  if (!equalBytes(reportedEvidenceDigest, sha256Bytes(sourceEvidence)))
     throw new Denial('binding_mismatch', 'verifier evidence digest mismatch');
   decodeB64Url(component.bindingDigest, 'component bindingDigest', 64);
   if (parseU64(component.validUntilMs, 'component validUntilMs') <= nowMs)
@@ -305,5 +307,7 @@ async function verifyBindingGraph(
 }
 
 export function evidenceDigest(component: EvidenceComponentV1): string {
-  return encodeB64Url(sha256Bytes(decodeB64Url(component.evidence, 'evidence')));
+  return encodeB64Url(
+    sha256Bytes(decodeB64Url(component.evidence, 'evidence', undefined, MAX_EVIDENCE_BYTES)),
+  );
 }

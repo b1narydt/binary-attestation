@@ -3,7 +3,17 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use crate::{Challenge, ChallengeStore, DEFAULT_MAX_CLOCK_SKEW_MS, Denial, SignedSecuritySnapshot};
+use crate::{
+    Challenge, ChallengeStore, Clock, DEFAULT_MAX_CLOCK_SKEW_MS, Denial, SignedSecuritySnapshot,
+    SystemClock,
+};
+
+/// Exact result and trusted-clock sample from a terminal fence transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalFence {
+    Allowed { committed_at_ms: u64 },
+    Denied { denial: Denial, checked_at_ms: u64 },
+}
 
 /// Strongly-consistent source of the current security epoch.  Provider code
 /// must never substitute an instance-local grace cache for this interface.
@@ -12,18 +22,25 @@ pub trait SecuritySnapshotStore: Send + Sync {
 
     /// Atomically commits a terminal allow decision on the shared
     /// epoch+terminal-decision fence. Implementations must check the exact
-    /// epoch/policy/trust/time in that transaction. The caller mirrors a
-    /// successful commit into its local challenge cache only afterwards.
-    fn terminal_fence(&self, challenge: &Challenge, now_ms: u64) -> Result<(), Denial>;
+    /// epoch/policy/trust/time and returned-claims validity in that
+    /// transaction. The store obtains its trusted time while holding the
+    /// transaction/write lock; callers cannot supply a stale timestamp. The
+    /// caller mirrors an allowed commit into its local challenge cache only
+    /// afterwards.
+    fn terminal_fence(
+        &self,
+        challenge: &Challenge,
+        claims_valid_until_ms: u64,
+    ) -> Result<TerminalFence, Denial>;
 }
 
 /// Small in-memory implementation suitable for a single relying-party process
 /// and deterministic tests.  Distributed deployments provide the same fence
 /// with a linearizable store.
-#[derive(Debug)]
 pub struct InMemorySnapshotStore {
     state: RwLock<SnapshotState>,
     max_clock_skew_ms: u64,
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Debug, Default)]
@@ -35,17 +52,30 @@ struct SnapshotState {
 
 impl InMemorySnapshotStore {
     pub fn new() -> Self {
-        Self::with_max_clock_skew(DEFAULT_MAX_CLOCK_SKEW_MS)
+        Self::with_clock(Arc::new(SystemClock))
+    }
+
+    /// Uses the supplied trusted clock for terminal transactions. Production
+    /// distributed stores provide the equivalent clock source at their own
+    /// linearization point.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_max_clock_skew(clock, DEFAULT_MAX_CLOCK_SKEW_MS)
     }
 
     /// Configures expiry-plus-skew retention for terminal admission records.
     pub fn with_max_clock_skew(max_clock_skew_ms: u64) -> Self {
+        Self::with_clock_and_max_clock_skew(Arc::new(SystemClock), max_clock_skew_ms)
+    }
+
+    /// Configures both the trusted clock and expiry-plus-skew retention.
+    pub fn with_clock_and_max_clock_skew(clock: Arc<dyn Clock>, max_clock_skew_ms: u64) -> Self {
         Self {
             state: RwLock::new(SnapshotState {
                 current: None,
                 terminal_allows: HashMap::new(),
             }),
             max_clock_skew_ms,
+            clock,
         }
     }
 
@@ -81,19 +111,33 @@ impl SecuritySnapshotStore for InMemorySnapshotStore {
             .ok_or(Denial::TrustSnapshotInvalid)
     }
 
-    fn terminal_fence(&self, challenge: &Challenge, now_ms: u64) -> Result<(), Denial> {
+    fn terminal_fence(
+        &self,
+        challenge: &Challenge,
+        claims_valid_until_ms: u64,
+    ) -> Result<TerminalFence, Denial> {
         // Publishing and committing an allow use this same exclusive fence.
         // Thus their commits have one total order, matching the distributed
         // SecurityDomainStore contract without pretending a remote commit and
         // local cache write are one transaction.
         let mut state = self.state.write().map_err(|_| Denial::InternalError)?;
+        let now_ms = self.clock.now_ms()?;
         state.terminal_allows.retain(|_, expires_at_ms| {
             now_ms < expires_at_ms.saturating_add(self.max_clock_skew_ms)
         });
         // `expiresAtMs` is exclusive. A shared allow record must never be
         // committed for a challenge that the local lifecycle will deny.
         if now_ms >= challenge.expires_at_ms.get() {
-            return Err(Denial::ChallengeExpired);
+            return Ok(TerminalFence::Denied {
+                denial: Denial::ChallengeExpired,
+                checked_at_ms: now_ms,
+            });
+        }
+        if claims_valid_until_ms <= now_ms {
+            return Ok(TerminalFence::Denied {
+                denial: Denial::EndorsementsStale,
+                checked_at_ms: now_ms,
+            });
         }
         let decision = state
             .current
@@ -115,20 +159,33 @@ impl SecuritySnapshotStore for InMemorySnapshotStore {
                 }
                 Ok(())
             });
-        decision?;
+        if let Err(denial) = decision {
+            return Ok(TerminalFence::Denied {
+                denial,
+                checked_at_ms: now_ms,
+            });
+        }
         if state
             .terminal_allows
             .contains_key(challenge.challenge_id.as_str())
         {
-            return Err(Denial::ChallengeUsed);
+            return Ok(TerminalFence::Denied {
+                denial: Denial::ChallengeUsed,
+                checked_at_ms: now_ms,
+            });
         }
         if state.terminal_allows.len() >= ChallengeStore::HARD_MAX_TERMINAL_RECORDS {
-            return Err(Denial::ResourceLimit);
+            return Ok(TerminalFence::Denied {
+                denial: Denial::ResourceLimit,
+                checked_at_ms: now_ms,
+            });
         }
         state.terminal_allows.insert(
             challenge.challenge_id.as_str().to_owned(),
             challenge.expires_at_ms.get(),
         );
-        Ok(())
+        Ok(TerminalFence::Allowed {
+            committed_at_ms: now_ms,
+        })
     }
 }

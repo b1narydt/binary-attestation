@@ -7,11 +7,14 @@ import {
   hasOnly,
   hasOnlyOptional,
   isRecord,
+  MAX_BUNDLE_BYTES,
   MAX_EVIDENCE_BYTES,
+  MAX_METADATA_ENTRIES,
   parseU64,
   requireString,
   validateString,
   validateSubject,
+  utf8,
 } from './validation.js';
 import {
   Denial,
@@ -46,12 +49,13 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
       encodedBundleUpperBound += Math.floor((component.evidence.length * 3) / 4);
     if (typeof component.endorsements === 'string')
       encodedBundleUpperBound += Math.floor((component.endorsements.length * 3) / 4);
+    encodedBundleUpperBound += rawMetadataJsonBytes(component.untrustedMetadata);
   }
   for (const edge of edgesRaw ?? []) {
     if (isRecord(edge) && typeof edge.evidence === 'string')
       encodedBundleUpperBound += Math.floor((edge.evidence.length * 3) / 4);
   }
-  if (encodedBundleUpperBound > 16 * 1024 * 1024)
+  if (encodedBundleUpperBound > MAX_BUNDLE_BYTES)
     throw new Denial('resource_limit', 'bundle too large');
   const components = componentsRaw.map(validateComponent);
   const componentIds = new Set<string>();
@@ -83,6 +87,24 @@ export function validateEvidenceBundle(value: unknown): EvidenceBundleV1 {
   return bundle;
 }
 
+function rawMetadataJsonBytes(value: unknown): number {
+  if (value === undefined || !isRecord(value)) return 0;
+  let bytes = 2;
+  let entries = 0;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    entries += 1;
+    if (entries > MAX_METADATA_ENTRIES)
+      throw new Denial('resource_limit', 'untrusted metadata has too many entries');
+    const item = value[key];
+    if (typeof item !== 'string') continue;
+    if (entries > 1) bytes += 1;
+    bytes += utf8(JSON.stringify(key)).byteLength + 1 + utf8(JSON.stringify(item)).byteLength;
+    if (bytes > MAX_BUNDLE_BYTES) return bytes;
+  }
+  return bytes;
+}
+
 function validateComponent(value: unknown): EvidenceComponentV1 {
   const required = ['componentId', 'provider', 'mediaType', 'evidence'];
   if (!isRecord(value) || !hasOnlyOptional(value, required, ['endorsements', 'untrustedMetadata']))
@@ -108,8 +130,14 @@ function validateComponent(value: unknown): EvidenceComponentV1 {
 function validateMetadata(value: unknown): Record<string, string> {
   if (!isRecord(value)) throw new Denial('malformed', 'untrusted metadata must be a record');
   const metadata: Record<string, string> = {};
-  for (const [key, item] of Object.entries(value))
-    metadata[validateString(key, 'metadata key')] = validateString(item, 'metadata value');
+  let entries = 0;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    entries += 1;
+    if (entries > MAX_METADATA_ENTRIES)
+      throw new Denial('resource_limit', 'untrusted metadata has too many entries');
+    metadata[validateString(key, 'metadata key')] = validateString(value[key], 'metadata value');
+  }
   return metadata;
 }
 
@@ -136,11 +164,26 @@ function validateBundleBytes(bundle: EvidenceBundleV1): void {
     bytes += decodeB64Url(component.evidence, 'evidence').byteLength;
     if (component.endorsements)
       bytes += decodeB64Url(component.endorsements, 'endorsements').byteLength;
+    if (component.untrustedMetadata) bytes += metadataJsonBytes(component.untrustedMetadata);
+    if (bytes > MAX_BUNDLE_BYTES) throw new Denial('resource_limit', 'bundle too large');
   }
   for (const edge of bundle.bindingEdges ?? []) {
     if (edge.evidence) bytes += decodeB64Url(edge.evidence, 'edge evidence').byteLength;
+    if (bytes > MAX_BUNDLE_BYTES) throw new Denial('resource_limit', 'bundle too large');
   }
-  if (bytes > 16 * 1024 * 1024) throw new Denial('resource_limit', 'bundle too large');
+}
+
+function metadataJsonBytes(metadata: Record<string, string>): number {
+  let bytes = 2; // opening and closing braces
+  let first = true;
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!first) bytes += 1; // comma
+    first = false;
+    bytes += utf8(JSON.stringify(key)).byteLength;
+    bytes += 1; // colon
+    bytes += utf8(JSON.stringify(value)).byteLength;
+  }
+  return bytes;
 }
 
 export class VerifierRegistry {

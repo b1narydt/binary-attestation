@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use binary_attestation_core::{
     AuthenticatedAttestationChannel, B64Url, BindingRelationVerifier, Challenge, ChallengeState,
-    ChallengeStore, Denial, EvidenceBindingEdge, EvidenceBundle, EvidenceComponent,
+    ChallengeStore, Clock, Denial, EvidenceBindingEdge, EvidenceBundle, EvidenceComponent,
     EvidenceVerifier, InMemorySnapshotStore, MAX_BINDING_EDGE_EVIDENCE, MAX_BUNDLE_BYTES,
     MAX_COMPONENT_EVIDENCE, PolicyDecision, ProviderRegistry, RelationRegistry,
-    SecuritySnapshotStore, SignedSecuritySnapshot, TransportMessage, VerifiedComponent,
+    SecuritySnapshotStore, SignedSecuritySnapshot, TerminalFence, TransportMessage,
+    VerifiedComponent,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -148,7 +149,7 @@ fn base64url_tail_bits_and_oversized_encoded_inputs_refuse_without_decode() {
         payload_digest: B64Url::from_bytes(&[0; 32]),
     };
     assert!(matches!(
-        message.decode(subject.clone(), &subject),
+        message.decode_challenge(subject.clone(), &subject),
         Err(Denial::ResourceLimit)
     ));
 }
@@ -165,6 +166,13 @@ impl EvidenceVerifier for NamedProvider {
         _: u64,
     ) -> Result<VerifiedComponent, Denial> {
         Err(Denial::InternalError)
+    }
+}
+
+struct FixedClock(u64);
+impl Clock for FixedClock {
+    fn now_ms(&self) -> Result<u64, Denial> {
+        Ok(self.0)
     }
 }
 struct NamedRelation(&'static str);
@@ -219,7 +227,7 @@ fn terminal_fence_has_one_order_with_epoch_publication() {
     let initial = snapshot_for(&mut first, 0);
     let mut update_challenge = first.clone();
     let update = snapshot_for(&mut update_challenge, 1);
-    let snapshots = InMemorySnapshotStore::new();
+    let snapshots = InMemorySnapshotStore::with_clock(Arc::new(FixedClock(1)));
     snapshots.publish(initial).expect("initial");
     let local = ChallengeStore::new(1, 2);
     local.issue(first.clone(), 1).expect("issue");
@@ -232,7 +240,7 @@ fn terminal_fence_has_one_order_with_epoch_publication() {
         )
         .expect("claim");
     snapshots
-        .terminal_fence(&first, 1)
+        .terminal_fence(&first, 100)
         .expect("allow-first fence");
     snapshots.publish(update).expect("later update");
     local
@@ -249,7 +257,7 @@ fn terminal_fence_has_one_order_with_epoch_publication() {
     let initial = snapshot_for(&mut old, 0);
     let mut update_challenge = old.clone();
     let update = snapshot_for(&mut update_challenge, 1);
-    let snapshots = InMemorySnapshotStore::new();
+    let snapshots = InMemorySnapshotStore::with_clock(Arc::new(FixedClock(1)));
     snapshots.publish(initial).expect("initial");
     let local = ChallengeStore::new(1, 2);
     local.issue(old.clone(), 1).expect("issue");
@@ -257,12 +265,20 @@ fn terminal_fence_has_one_order_with_epoch_publication() {
         .begin(old.challenge_id.as_str(), &old.subject, &old.subject, 1)
         .expect("claim");
     snapshots.publish(update).expect("update-first");
-    let denial = snapshots
-        .terminal_fence(&old, 1)
-        .expect_err("stale epoch refuses");
-    assert_eq!(denial, Denial::SecurityEpochChanged);
+    let denial = snapshots.terminal_fence(&old, 100).expect("fence result");
     assert_eq!(
-        local.finish(old.challenge_id.as_str(), Err(denial), 1),
+        denial,
+        TerminalFence::Denied {
+            denial: Denial::SecurityEpochChanged,
+            checked_at_ms: 1,
+        }
+    );
+    assert_eq!(
+        local.finish(
+            old.challenge_id.as_str(),
+            Err(Denial::SecurityEpochChanged),
+            1
+        ),
         Err(Denial::SecurityEpochChanged)
     );
     assert_eq!(
@@ -275,11 +291,14 @@ fn terminal_fence_has_one_order_with_epoch_publication() {
 fn terminal_fence_refuses_at_exclusive_challenge_expiry() {
     let mut challenge = challenge(); // fixture expires at 2
     let snapshot = snapshot_for(&mut challenge, 0);
-    let snapshots = InMemorySnapshotStore::new();
+    let snapshots = InMemorySnapshotStore::with_clock(Arc::new(FixedClock(2)));
     snapshots.publish(snapshot).expect("initial");
     assert_eq!(
-        snapshots.terminal_fence(&challenge, 2),
-        Err(Denial::ChallengeExpired)
+        snapshots.terminal_fence(&challenge, 100),
+        Ok(TerminalFence::Denied {
+            denial: Denial::ChallengeExpired,
+            checked_at_ms: 2,
+        })
     );
 }
 

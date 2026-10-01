@@ -410,6 +410,77 @@ describe('BCAP1 A1 lifecycle and plugin boundary', () => {
     expect(allowFirst.snapshots.admission(admitted.challengeId)).toBeDefined();
   });
 
+  it('samples trusted time inside the terminal fence before committing allow', async () => {
+    let clock = 1_000n;
+    class DelayedFenceStore extends InMemorySecuritySnapshotStore {
+      override fence(...args: Parameters<InMemorySecuritySnapshotStore['fence']>): void {
+        clock = 1_100n;
+        super.fence(...args);
+      }
+    }
+    const current = snapshot();
+    const snapshots = new DelayedFenceStore(current);
+    const registry = new VerifierRegistry().registerProvider({
+      provider: 'portable-test',
+      async verify(component, expectedBinding) {
+        return {
+          componentId: component.componentId,
+          provider: component.provider,
+          evidenceDigest: evidenceDigest(component),
+          bindingDigest: encodeB64Url(expectedBinding),
+          platform: {},
+          measurements: {},
+          tcb: {},
+          advisories: [],
+          validUntilMs: '9000',
+        };
+      },
+    });
+    const core = new AttestationCore(
+      snapshots,
+      registry,
+      undefined,
+      { nowMs: () => clock },
+      (length) => new Uint8Array(length).fill(44),
+    );
+    const challenge = core.issue({
+      subject,
+      audience: 'https://rp.example',
+      context: 'urn:fence-expiry',
+      contextDigest: bytes(32, 4),
+      policyId: current.body.policyId,
+      policyDigest: current.body.policyDigest,
+      ttlMs: 100n,
+    });
+    const policy: PolicyEvaluator = {
+      policyId: current.body.policyId,
+      policyDigest: current.body.policyDigest,
+      async evaluate() {
+        return { subjectBinding: 'brc103', validUntilMs: '9000' };
+      },
+    };
+    expect(
+      await core.verify({
+        bundle: {
+          protocolVersion: 1,
+          challengeId: challenge.challengeId,
+          subject,
+          components: [
+            {
+              componentId: 'cpu',
+              provider: 'portable-test',
+              mediaType: 'application/test',
+              evidence: bytes(1),
+            },
+          ],
+        },
+        authenticatedSubject: subject,
+        policy,
+      }),
+    ).toMatchObject({ decision: 'deny', denial: 'challenge_expired' });
+    expect(snapshots.admission(challenge.challengeId)).toBeUndefined();
+  });
+
   it('fails closed on hostile verifier output and already-expired policy results', async () => {
     const fixture = setup();
     fixture.core.registry.registerProvider({
@@ -941,8 +1012,21 @@ describe('BCAP1 transport and browser boundary', () => {
   });
   it('refuses frozen invalid bundle structures before authenticated transport exposure', () => {
     const { issue } = setup();
+    const challenge = issue();
     for (const rejection of coreRejectionVectors.bundleRejections) {
-      const challenge = issue();
+      const evidence =
+        rejection.evidenceBytesPerComponent === undefined
+          ? bytes(1)
+          : bytes(rejection.evidenceBytesPerComponent);
+      const metadata =
+        rejection.metadataEntries === undefined
+          ? undefined
+          : Object.fromEntries(
+              Array.from({ length: rejection.metadataEntries }, (_, index) => [
+                `key-${index}`,
+                'value',
+              ]),
+            );
       const bundle = {
         protocolVersion: 1 as const,
         challengeId: challenge.challengeId,
@@ -951,13 +1035,15 @@ describe('BCAP1 transport and browser boundary', () => {
           componentId,
           provider: 'portable-test',
           mediaType: 'application/test',
-          evidence: bytes(1),
+          evidence,
+          ...(metadata === undefined ? {} : { untrustedMetadata: metadata }),
         })),
         bindingEdges: rejection.edges,
       };
       expect(() => validateEvidenceBundle(bundle), rejection.id).toThrowError(
         expect.objectContaining({ code: rejection.denial }),
       );
+      if (rejection.evidenceBytesPerComponent !== undefined) continue;
       const payload = jcsBytes(bundle);
       expect(
         () =>

@@ -27,7 +27,7 @@ pub use provider::{
     BindingRelationVerifier, EvidenceVerifier, PolicyDecision, PolicyEvaluator, ProviderRegistry,
     RelationRegistry,
 };
-pub use snapshot::{InMemorySnapshotStore, SecuritySnapshotStore};
+pub use snapshot::{InMemorySnapshotStore, SecuritySnapshotStore, TerminalFence};
 pub use transcript::{TranscriptPreimage, binding_digest, provider_binding_digest};
 pub use transport::{
     AuthenticatedAttestationChannel, AuthenticatedMessage, AuthenticatedTransportMessage,

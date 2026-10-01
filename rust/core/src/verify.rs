@@ -105,62 +105,59 @@ impl CoreVerifier {
             }
         };
         let result = self.verify_claimed(&challenge, input, now_ms);
-        let terminal_now = match self.clock.now_ms() {
-            Ok(now) => now,
-            Err(denial) => {
-                let _ = self
-                    .challenges
-                    .finish_clock_failure(challenge.challenge_id.as_str());
-                return Err(denial);
-            }
-        };
         match result {
             Ok(claims) => {
-                // All validity windows are exclusive. Do not commit a shared
-                // allow whose returned claims are already unusable at the
-                // terminal fence, even if the challenge itself remains live.
-                if claims.valid_until_ms.get() <= terminal_now {
-                    return match self.challenges.finish(
-                        challenge.challenge_id.as_str(),
-                        Err(Denial::EndorsementsStale),
-                        terminal_now,
-                    ) {
-                        Err(terminal_denial) => Err(terminal_denial),
-                        Ok(()) => Err(Denial::EndorsementsStale),
-                    };
-                }
-                // Commit at the shared epoch fence first. The local store is a
-                // cache/mirror only; it cannot remain allowed if that shared
-                // transaction refuses.
-                match self.snapshots.terminal_fence(&challenge, terminal_now) {
-                    Ok(()) => {
+                // Commit at the shared epoch fence first. It obtains trusted
+                // time under its write transaction and checks expiry, returned
+                // claims validity, and snapshot state at that point.
+                match self
+                    .snapshots
+                    .terminal_fence(&challenge, claims.valid_until_ms.get())
+                {
+                    Ok(crate::TerminalFence::Allowed { committed_at_ms }) => {
                         self.challenges.finish(
                             challenge.challenge_id.as_str(),
                             Ok(()),
-                            terminal_now,
+                            committed_at_ms,
                         )?;
                         Ok(claims)
                     }
-                    Err(denial) => match self.challenges.finish(
+                    Ok(crate::TerminalFence::Denied {
+                        denial,
+                        checked_at_ms,
+                    }) => match self.challenges.finish(
                         challenge.challenge_id.as_str(),
                         Err(denial),
-                        terminal_now,
+                        checked_at_ms,
                     ) {
                         Err(terminal_denial) => Err(terminal_denial),
                         Ok(()) => Err(denial),
                     },
+                    Err(denial) => self
+                        .finish_after_clock_failure_or_now(challenge.challenge_id.as_str(), denial),
                 }
             }
             Err(denial) => {
-                match self.challenges.finish(
-                    challenge.challenge_id.as_str(),
-                    Err(denial),
-                    terminal_now,
-                ) {
-                    Err(terminal_denial) => Err(terminal_denial),
-                    Ok(()) => Err(denial),
-                }
+                self.finish_after_clock_failure_or_now(challenge.challenge_id.as_str(), denial)
             }
+        }
+    }
+
+    fn finish_after_clock_failure_or_now(
+        &self,
+        challenge_id: &str,
+        denial: Denial,
+    ) -> Result<VerifiedClaims, Denial> {
+        let now_ms = match self.clock.now_ms() {
+            Ok(now_ms) => now_ms,
+            Err(clock_denial) => {
+                let _ = self.challenges.finish_clock_failure(challenge_id);
+                return Err(clock_denial);
+            }
+        };
+        match self.challenges.finish(challenge_id, Err(denial), now_ms) {
+            Err(terminal_denial) => Err(terminal_denial),
+            Ok(()) => Err(denial),
         }
     }
 

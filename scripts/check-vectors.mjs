@@ -375,7 +375,8 @@ function verifyCoreRejections(vector) {
     if (accepted) fail(`${testCase.id} was accepted as UTF-8 scalar text`);
   }
   for (const testCase of vector.bundleRejections) {
-    if (testCase.denial !== 'malformed') fail(`${testCase.id} has an invalid denial`);
+    if (testCase.denial !== 'malformed' && testCase.denial !== 'resource_limit')
+      fail(`${testCase.id} has an invalid denial`);
     const ids = new Set();
     let rejected = false;
     for (const id of testCase.componentIds) {
@@ -388,6 +389,14 @@ function verifyCoreRejections(vector) {
       const key = `${edge.parentComponentId}\0${edge.childComponentId}`;
       if (endpoints.has(key)) rejected = true;
       endpoints.add(key);
+    }
+    if (testCase.metadataEntries > 256) rejected = true;
+    if (
+      (testCase.evidenceBytesPerComponent ?? 0) * testCase.componentIds.length >=
+        16 * 1024 * 1024 &&
+      testCase.metadataEntries > 0
+    ) {
+      rejected = true;
     }
     if (!rejected) fail(`${testCase.id} does not exercise a rejected bundle structure`);
   }
@@ -417,6 +426,14 @@ function mutateFixture(fixture, rejection) {
       break;
     case 'repeat-array':
       parent[last] = Array.from({ length: rejection.count }, () => clone(parent[last][0]));
+      break;
+    case 'repeat-map':
+      parent[last] = Object.fromEntries(
+        Array.from({ length: rejection.count }, (_, index) => [
+          `${rejection.keyPrefix}${index}`,
+          rejection.value,
+        ]),
+      );
       break;
     default:
       fail(`${rejection.id} has unknown mutation ${rejection.operation}`);

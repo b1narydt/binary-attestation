@@ -87,10 +87,43 @@ pub enum AuthenticatedTransportMessage {
 }
 
 impl TransportMessage {
-    pub fn decode(
+    /// Decodes a challenge envelope. Evidence envelopes require
+    /// [`Self::decode_evidence`], which binds their context to stored
+    /// challenge state.
+    pub fn decode_challenge(
         &self,
         authenticated_peer: AttestationSubject,
         local_subject: &AttestationSubject,
+    ) -> Result<AuthenticatedTransportMessage, Denial> {
+        if self.message_type != MessageType::Challenge {
+            return Err(Denial::Malformed);
+        }
+        self.decode(authenticated_peer, local_subject, None)
+    }
+
+    /// Decodes an evidence envelope only after the caller has selected the
+    /// referenced stored challenge and supplied its context digest (§12).
+    pub fn decode_evidence(
+        &self,
+        authenticated_peer: AttestationSubject,
+        local_subject: &AttestationSubject,
+        stored_challenge_context_digest: &B64Url,
+    ) -> Result<AuthenticatedTransportMessage, Denial> {
+        if self.message_type != MessageType::Evidence {
+            return Err(Denial::Malformed);
+        }
+        self.decode(
+            authenticated_peer,
+            local_subject,
+            Some(stored_challenge_context_digest),
+        )
+    }
+
+    fn decode(
+        &self,
+        authenticated_peer: AttestationSubject,
+        local_subject: &AttestationSubject,
+        stored_challenge_context_digest: Option<&B64Url>,
     ) -> Result<AuthenticatedTransportMessage, Denial> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(Denial::UnsupportedVersion);
@@ -144,6 +177,9 @@ impl TransportMessage {
                 })
             }
             MessageType::Evidence => {
+                if stored_challenge_context_digest != Some(&self.context_digest) {
+                    return Err(Denial::BindingMismatch);
+                }
                 let bundle: EvidenceBundle =
                     serde_json::from_value(value).map_err(|_| Denial::Malformed)?;
                 bundle.validate()?;

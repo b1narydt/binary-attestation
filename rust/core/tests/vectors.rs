@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use binary_attestation_core::{
     AttestationSubject, B64Url, Challenge, Denial, EvidenceBindingEdge, EvidenceBundle,
     EvidenceComponent, SignedSecuritySnapshot, TransportMessage, binding_digest, jcs_bytes,
@@ -149,7 +151,25 @@ fn transport_kats_decode_only_with_authenticated_identities_and_digest() {
             serde_json::from_value(vector["authenticatedPeer"].clone()).expect("peer");
         let local: AttestationSubject =
             serde_json::from_value(vector["authenticatedLocalSubject"].clone()).expect("local");
-        assert!(message.decode(peer, &local).is_ok(), "{}", vector["id"]);
+        let decoded = match message.message_type {
+            binary_attestation_core::MessageType::Challenge => {
+                message.decode_challenge(peer.clone(), &local)
+            }
+            binary_attestation_core::MessageType::Evidence => {
+                message.decode_evidence(peer.clone(), &local, &message.context_digest)
+            }
+        };
+        assert!(decoded.is_ok(), "{}", vector["id"]);
+        if message.message_type == binary_attestation_core::MessageType::Evidence {
+            assert!(
+                matches!(
+                    message.decode_evidence(peer, &local, &B64Url::from_bytes(&[1; 32])),
+                    Err(Denial::BindingMismatch)
+                ),
+                "{} must bind evidence to the stored challenge context",
+                vector["id"]
+            );
+        }
         assert_eq!(
             message
                 .payload
@@ -191,17 +211,28 @@ fn core_rejection_vectors_refuse_duplicate_edges_and_invalid_unicode() {
         .as_array()
         .expect("bundleRejections")
     {
+        let evidence_bytes = rejection["evidenceBytesPerComponent"]
+            .as_u64()
+            .map_or(1, |value| usize::try_from(value).expect("usize"));
+        let metadata_entries = rejection["metadataEntries"]
+            .as_u64()
+            .map_or(0, |value| usize::try_from(value).expect("usize"));
         let components = rejection["componentIds"]
             .as_array()
             .expect("component ids")
             .iter()
-            .map(|id| EvidenceComponent {
+            .enumerate()
+            .map(|(index, id)| EvidenceComponent {
                 component_id: id.as_str().expect("component id").to_owned(),
                 provider: "fixture-v1".into(),
                 media_type: "application/fixture".into(),
-                evidence: B64Url::from_bytes(&[1]),
+                evidence: B64Url::from_bytes(&vec![1; evidence_bytes]),
                 endorsements: None,
-                untrusted_metadata: None,
+                untrusted_metadata: (index == 0 && metadata_entries > 0).then(|| {
+                    (0..metadata_entries)
+                        .map(|entry| (format!("key-{entry}"), "value".to_owned()))
+                        .collect::<BTreeMap<_, _>>()
+                }),
             })
             .collect();
         let edges = rejection["edges"]
@@ -227,11 +258,11 @@ fn core_rejection_vectors_refuse_duplicate_edges_and_invalid_unicode() {
             components,
             binding_edges: Some(edges.collect()),
         };
-        assert_eq!(
-            bundle.validate(),
-            Err(Denial::Malformed),
-            "{}",
-            rejection["id"]
-        );
+        let expected = match rejection["denial"].as_str() {
+            Some("malformed") => Denial::Malformed,
+            Some("resource_limit") => Denial::ResourceLimit,
+            value => panic!("unsupported denial vector {value:?}"),
+        };
+        assert_eq!(bundle.validate(), Err(expected), "{}", rejection["id"]);
     }
 }

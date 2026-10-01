@@ -49,6 +49,21 @@
         }
       ],
       "denial": "malformed"
+    },
+    {
+      "id": "metadata-entry-limit",
+      "componentIds": ["root"],
+      "edges": [],
+      "metadataEntries": 257,
+      "denial": "resource_limit"
+    },
+    {
+      "id": "bundle-budget-includes-metadata",
+      "componentIds": ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"],
+      "edges": [],
+      "evidenceBytesPerComponent": 2097152,
+      "metadataEntries": 1,
+      "denial": "resource_limit"
     }
   ]
 }

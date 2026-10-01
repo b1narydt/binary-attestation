@@ -189,15 +189,20 @@ export interface SecuritySnapshotSource {
   /**
    * A linearizable admission fence. Implementations MUST serialize this with
    * snapshot publication, verify the exact expected epoch/policy/trust
-   * revision remains current and valid at `nowMs`, and durably record the
-   * admission as the transaction's linearization point. It MUST return only
-   * after that transaction commits; callers mirror the local terminal allow
-   * only afterward. Distributed stores must never invoke a local callback from
-   * their transaction or implement this as a read followed by a later write.
+   * revision remains current, obtain trusted time at the transaction's
+   * linearization point, and durably record the admission there. It MUST
+   * return only after that transaction commits; callers mirror the local
+   * terminal allow only afterward. Distributed stores must not invoke
+   * side-effect callbacks from their transaction or implement this as a read
+   * followed by a later write.
    */
   fence(
-    expected: Pick<AttestationChallengeV1, 'securityEpoch' | 'policyDigest' | 'trustDigest'>,
-    nowMs: bigint,
+    expected: Pick<
+      AttestationChallengeV1,
+      'securityEpoch' | 'policyDigest' | 'trustDigest' | 'expiresAtMs'
+    >,
+    /** Called by the store inside its linearization point, never before it. */
+    trustedNowMs: () => bigint,
     admission: { challengeId: B64Url; claims: VerifiedClaimsV1 },
   ): void;
 }

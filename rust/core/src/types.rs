@@ -18,6 +18,10 @@ pub const MAX_BINDING_EDGE_EVIDENCE: usize = 2 * 1024 * 1024;
 pub const MAX_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_BINDING_EDGES: usize = 64;
 pub const MAX_CLAIM_KEYS: usize = 256;
+/// Hard maximum for untrusted metadata fields on one evidence component (§9).
+pub const MAX_UNTRUSTED_METADATA_ENTRIES: usize = 256;
+
+const JSON_METADATA_OBJECT_OVERHEAD_BYTES: usize = 2;
 
 /// Strict unpadded base64url text.  The original canonical text is retained
 /// so it can safely be serialized without alternate encodings.
@@ -363,13 +367,39 @@ impl EvidenceComponent {
         {
             return Err(Denial::ResourceLimit);
         }
-        if let Some(metadata) = &self.untrusted_metadata {
-            for (key, value) in metadata {
+        self.untrusted_metadata_budget()?;
+        Ok(())
+    }
+
+    /// Charges the exact JSON string bytes for untrusted metadata before any
+    /// provider work. Rust and TypeScript use the same quote/escape accounting
+    /// so the 16 MiB decision cannot diverge across implementations.
+    fn untrusted_metadata_budget(&self) -> Result<usize, Denial> {
+        let Some(metadata) = &self.untrusted_metadata else {
+            return Ok(0);
+        };
+        if metadata.len() > MAX_UNTRUSTED_METADATA_ENTRIES {
+            return Err(Denial::ResourceLimit);
+        }
+        metadata.iter().enumerate().try_fold(
+            JSON_METADATA_OBJECT_OVERHEAD_BYTES,
+            |total, (index, (key, value))| {
                 validate_text(key)?;
                 validate_text(value)?;
-            }
-        }
-        Ok(())
+                let key_bytes = serde_json::to_string(key)
+                    .map_err(|_| Denial::Malformed)?
+                    .len();
+                let value_bytes = serde_json::to_string(value)
+                    .map_err(|_| Denial::Malformed)?
+                    .len();
+                let entry_bytes = key_bytes
+                    .checked_add(value_bytes)
+                    .and_then(|bytes| bytes.checked_add(1)) // colon
+                    .and_then(|bytes| bytes.checked_add(usize::from(index > 0))) // comma
+                    .ok_or(Denial::ResourceLimit)?;
+                total.checked_add(entry_bytes).ok_or(Denial::ResourceLimit)
+            },
+        )
     }
 }
 
@@ -443,6 +473,9 @@ impl EvidenceBundle {
                             .map_or(0, B64Url::decoded_len),
                     )
                 })
+                .ok_or(Denial::ResourceLimit)?;
+            decoded_total = decoded_total
+                .checked_add(component.untrusted_metadata_budget()?)
                 .ok_or(Denial::ResourceLimit)?;
         }
         if decoded_total > MAX_BUNDLE_BYTES {

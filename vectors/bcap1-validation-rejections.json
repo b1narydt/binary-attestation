@@ -1,6 +1,6 @@
 {
   "format": "bcap1-schema-rejections-v1",
-  "description": "Each case applies its operation to the named valid fixture and MUST be rejected before provider verification. delete removes a required property; set replaces a value. repeat is an exact UTF-8 ASCII construction.",
+  "description": "Each case applies its operation to the named valid fixture and MUST be rejected before provider verification. delete removes a required property; set replaces a value. repeat and repeat-map are exact UTF-8 ASCII constructions.",
   "cases": [
     {
       "id": "challenge-missing-required",
@@ -72,6 +72,17 @@
       "path": "components",
       "count": 33,
       "reason": "more than 32 components"
+    },
+    {
+      "id": "evidence-over-metadata-entry-limit",
+      "schema": "evidence-bundle.schema.json",
+      "fixture": "bcap1-transport.json#evidence-jcs.message.payload (base64url-decoded JCS)",
+      "operation": "repeat-map",
+      "path": "components[0].untrustedMetadata",
+      "count": 257,
+      "keyPrefix": "key-",
+      "value": "value",
+      "reason": "more than 256 untrusted metadata entries"
     },
     {
       "id": "transport-missing-required",

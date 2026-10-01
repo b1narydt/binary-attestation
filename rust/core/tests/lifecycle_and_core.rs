@@ -198,20 +198,30 @@ fn terminal_challenge_tombstones_are_skew_retained_then_pruned() {
 #[test]
 fn admission_tombstones_are_skew_retained_then_pruned() {
     let (snapshot, first) = snapshot_and_challenge(2);
-    let snapshots = InMemorySnapshotStore::with_max_clock_skew(2);
+    let clock = Arc::new(ManualClock::default());
+    clock.set(1);
+    let snapshots = InMemorySnapshotStore::with_clock_and_max_clock_skew(clock.clone(), 2);
     snapshots.publish(snapshot).expect("publish");
-    snapshots.terminal_fence(&first, 1).expect("first allow");
+    assert!(matches!(
+        snapshots.terminal_fence(&first, 100),
+        Ok(binary_attestation_core::TerminalFence::Allowed { .. })
+    ));
 
     // A reused ID remains fenced through expiry plus skew, even when a newer
     // challenge with that ID would otherwise be valid at the supplied time.
     let mut later = first.clone();
     later.expires_at_ms = serde_json::from_str("\"10\"").expect("u64");
+    clock.set(3);
     assert_eq!(
-        snapshots.terminal_fence(&later, 3),
-        Err(Denial::ChallengeUsed)
+        snapshots.terminal_fence(&later, 100),
+        Ok(binary_attestation_core::TerminalFence::Denied {
+            denial: Denial::ChallengeUsed,
+            checked_at_ms: 3,
+        })
     );
+    clock.set(4);
     snapshots
-        .terminal_fence(&later, 4)
+        .terminal_fence(&later, 100)
         .expect("expired admission pruned after skew");
 }
 
@@ -225,6 +235,15 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn now_ms(&self) -> Result<u64, Denial> {
         Ok(self.0.load(Ordering::SeqCst))
+    }
+}
+
+/// Returns a later trusted timestamp on each call, modelling a fence that
+/// linearizes after verification has completed.
+struct AdvancingClock(AtomicU64);
+impl Clock for AdvancingClock {
+    fn now_ms(&self) -> Result<u64, Denial> {
+        Ok(self.0.fetch_add(1, Ordering::SeqCst))
     }
 }
 
@@ -406,7 +425,7 @@ fn core_with_validity(
     component_valid_until: u64,
     policy_valid_until: u64,
 ) -> (CoreVerifier, Arc<ChallengeStore>) {
-    let snapshots = Arc::new(InMemorySnapshotStore::new());
+    let snapshots = Arc::new(InMemorySnapshotStore::with_clock(clock.clone()));
     snapshots.publish(snapshot).expect("publish");
     let challenges = Arc::new(ChallengeStore::new(4, 10));
     let providers = Arc::new(ProviderRegistry::new());
@@ -439,7 +458,7 @@ fn concurrency_core(
     clock: Arc<ManualClock>,
     provider: Arc<dyn EvidenceVerifier>,
 ) -> (CoreVerifier, Arc<ChallengeStore>) {
-    let snapshots = Arc::new(InMemorySnapshotStore::new());
+    let snapshots = Arc::new(InMemorySnapshotStore::with_clock(clock.clone()));
     snapshots.publish(snapshot).expect("publish");
     let challenges = Arc::new(ChallengeStore::new(8, 10));
     let providers = Arc::new(ProviderRegistry::new());
@@ -574,6 +593,52 @@ fn verification_rechecks_trusted_clock_before_allow() {
     assert!(matches!(result, Err(Denial::ChallengeExpired)));
     assert_eq!(
         store.state(challenge.challenge_id.as_str(), 20),
+        Ok(ChallengeState::ConsumedDeny(Denial::ChallengeExpired))
+    );
+}
+
+#[test]
+fn terminal_fence_samples_time_after_verification_and_denies_at_expiry() {
+    // The verifier's initial challenge check sees t=1. No provider advances
+    // time; the snapshot-store fence itself samples t=2 under its write lock,
+    // where expiry is exclusive and must deny.
+    let clock: Arc<dyn Clock> = Arc::new(AdvancingClock(AtomicU64::new(1)));
+    let (snapshot, challenge) = snapshot_and_challenge(2);
+    let snapshots = Arc::new(InMemorySnapshotStore::with_clock(clock.clone()));
+    snapshots.publish(snapshot).expect("publish");
+    let challenges = Arc::new(ChallengeStore::new(4, 10));
+    challenges.issue(challenge.clone(), 1).expect("issue");
+    let providers = Arc::new(ProviderRegistry::new());
+    providers
+        .register(Arc::new(FixtureVerifier {
+            clock: None,
+            advance_to: 0,
+            valid_until: 100,
+        }))
+        .expect("provider");
+    let relations = Arc::new(RelationRegistry::new());
+    relations
+        .register(Arc::new(FixtureRelation))
+        .expect("relation");
+    let verifier = CoreVerifier::with_clock(
+        challenges.clone(),
+        snapshots,
+        providers,
+        relations,
+        Arc::new(AllowPolicy(100)),
+        clock,
+    );
+
+    assert!(matches!(
+        verifier.verify(VerificationInput {
+            authenticated_subject: &challenge.subject,
+            bundle: &bundle(&challenge, true),
+            transport_context_digest: &challenge.context_digest,
+        }),
+        Err(Denial::ChallengeExpired)
+    ));
+    assert_eq!(
+        challenges.state(challenge.challenge_id.as_str(), 2),
         Ok(ChallengeState::ConsumedDeny(Denial::ChallengeExpired))
     );
 }

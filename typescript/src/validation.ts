@@ -6,6 +6,7 @@ export const MAX_U64 = 18_446_744_073_709_551_615n;
 export const MAX_STRING_BYTES = 1024;
 export const MAX_COMPONENTS = 32;
 export const MAX_BINDING_EDGES = 64;
+export const MAX_METADATA_ENTRIES = 256;
 export const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
 export const MAX_ENDORSEMENTS_BYTES = 4 * 1024 * 1024;
 export const MAX_BUNDLE_BYTES = 16 * 1024 * 1024;

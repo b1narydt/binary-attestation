@@ -43,7 +43,10 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "type": { "const": "brc100-public-key" } }, "required": ["type"] },
+          "if": {
+            "properties": { "type": { "const": "brc100-public-key" } },
+            "required": ["type"]
+          },
           "then": {
             "properties": {
               "value": {
@@ -58,6 +61,7 @@
     },
     "stringMap": {
       "type": "object",
+      "maxProperties": 256,
       "additionalProperties": { "$ref": "#/$defs/shortString" }
     }
   }

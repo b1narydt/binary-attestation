@@ -210,14 +210,25 @@ export class InMemorySecuritySnapshotStore implements SecuritySnapshotSource {
   }
 
   fence(
-    expected: Pick<AttestationChallengeV1, 'securityEpoch' | 'policyDigest' | 'trustDigest'>,
-    nowMs: bigint,
+    expected: Pick<
+      AttestationChallengeV1,
+      'securityEpoch' | 'policyDigest' | 'trustDigest' | 'expiresAtMs'
+    >,
+    trustedNowMs: () => bigint,
     admission: { challengeId: string; claims: VerifiedClaimsV1 },
   ): void {
+    // A distributed implementation obtains its transactional clock at this
+    // same point. A timestamp sampled by the caller before waiting on the
+    // fence is not an authorization check.
+    const nowMs = trustedNowMs();
     this.pruneAdmissions(nowMs);
     const snapshot = this.#snapshot;
     if (!snapshot || !snapshotIsValid(snapshot, nowMs)) throw new Denial('trust_snapshot_invalid');
     if (!snapshotMatches(expected, snapshot)) throw new Denial('security_epoch_changed');
+    if (nowMs >= parseU64(expected.expiresAtMs, 'expiresAtMs'))
+      throw new Denial('challenge_expired');
+    if (nowMs >= parseU64(admission.claims.validUntilMs, 'validUntilMs'))
+      throw new Denial('policy_mismatch', 'claims expired before admission commit');
     if (this.#admissions.has(admission.challengeId)) throw new Denial('challenge_used');
     if (this.#admissions.size >= this.#maxAdmissions)
       throw new Denial('resource_limit', 'admission retention limit reached');
@@ -392,7 +403,10 @@ export class AttestationCore {
         };
         // The shared store transaction, not this local cache write, is the
         // authorization linearization point.
-        this.snapshots.fence(challenge, finalNow, { challengeId: challenge.challengeId, claims });
+        this.snapshots.fence(challenge, () => this.now(), {
+          challengeId: challenge.challengeId,
+          claims,
+        });
         this.challenges.allow(challenge.challengeId, claims);
         return { decision: 'allow', claims };
       } catch (error) {

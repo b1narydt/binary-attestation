@@ -1,6 +1,6 @@
 services:
   probe:
-    image: ghcr.io/mitch-burcham/bcap1-dstack-probe:20261005
+    image: ghcr.io/b1narydt/bcap1-dstack-probe@sha256:3a73dffe4bd8d344ffa54d451f7889066ea3a504ddf8e60296520cc8b63603be
     restart: unless-stopped
     ports:
       - "8000:8000"

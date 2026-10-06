@@ -23,7 +23,7 @@ docker buildx build \
   --provenance=false \
   --sbom=false \
   -f deploy/dstack-live-probe/Dockerfile \
-  -t ghcr.io/mitch-burcham/bcap1-dstack-probe:20261005 \
+  -t ghcr.io/b1narydt/bcap1-dstack-probe:20261005 \
   --push .
 ```
 
@@ -34,7 +34,7 @@ OS. Do not allow the CLI to auto-select the image or node.
 
 ```bash
 phala deploy \
-  --name bcap1-dstack-live-probe \
+  --name bcap1-dstack-probe \
   --compose deploy/dstack-live-probe/docker-compose.yml \
   --instance-type tdx.small \
   --node-id 18 \

@@ -1,0 +1,49 @@
+name: Deploy dstack live probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: dstack-live-probe
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install pinned Phala Cloud CLI
+        run: npm install --global phala@1.1.19
+      - name: Verify private image access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker buildx imagetools inspect \
+            ghcr.io/b1narydt/bcap1-dstack-probe@sha256:3a73dffe4bd8d344ffa54d451f7889066ea3a504ddf8e60296520cc8b63603be
+      - name: Deploy production dstack probe
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -n "$PHALA_CLOUD_API_KEY"
+          test -n "$GHCR_TOKEN"
+          phala deploy \
+            --name bcap1-dstack-probe \
+            --compose deploy/dstack-live-probe/docker-compose.yml \
+            --instance-type tdx.small \
+            --node-id 18 \
+            --image dstack-0.5.9 \
+            --no-dev-os \
+            --wait \
+            --json \
+            -e "DSTACK_DOCKER_USERNAME=${{ github.actor }}" \
+            -e "DSTACK_DOCKER_PASSWORD=$GHCR_TOKEN" \
+            -e DSTACK_DOCKER_REGISTRY=ghcr.io

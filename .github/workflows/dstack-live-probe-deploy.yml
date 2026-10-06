@@ -53,9 +53,9 @@ jobs:
             cvm_json=$(phala cvms get bcap1-dstack-probe --json)
             cvm_status=$(printf '%s' "$cvm_json" | jq -r '.status')
             instance_id=$(printf '%s' "$cvm_json" | jq -r '.instance_id // empty')
-            echo "attempt=$attempt status=$cvm_status instance=${instance_id:-pending}"
+            echo "attempt=$attempt status=$cvm_status instance=${instance_id:-unreported}"
 
-            if [[ "$cvm_status" == "running" && -n "$instance_id" ]]; then
+            if [[ "$cvm_status" == "running" ]]; then
               endpoint=$(printf '%s' "$cvm_json" | jq -er '.endpoints[0].app')
               curl --fail --silent --show-error --retry 12 --retry-delay 5 "$endpoint/health"
               printf '%s' "$cvm_json" | jq '{id,name,app_id,vm_uuid,instance_id,status,compose_hash,os,node_info,endpoints,services}'

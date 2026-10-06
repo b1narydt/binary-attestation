@@ -35,6 +35,11 @@ pub const COMPOSE_HASH: &str = "fc19b07126115b47869928e86bfa1170e10e51110eb046be
 pub const APP_ID: &str = "3cfe3bb849a0d4484ac0f579b45383d287f90fce";
 pub const INSTANCE_ID: &str = "6fc1d0f4bb81b981886b4250845079b65c874625";
 pub const MR_KMS: &str = "de46a8d7a3b3660b01a77c5d2829c31ceedae0419b7bb2716c47c9224e0f4c1e";
+pub const APP_ID_20261006: &str = "fb0130ad4d6f15107991a8551b6f7fe2aa78cce0";
+pub const COMPOSE_HASH_20261006: &str =
+    "a49aa45767fc6c6fc549dbf595dead3a22d882f531a3fc0c524171c5eb2787cf";
+pub const VM_CONFIG_SHA256_20261006: &str =
+    "848831ae8b31ea11155965aca53602c5254782d83ca5da16bf499207221daa64";
 pub const KMS_K256_ROOT: &str =
     "0334c76e0c3f52ec64cbf9bbf5c910c272330166fd656c0a86bb330963e46910e1";
 pub const FMSPC: &str = "20A06F000000";

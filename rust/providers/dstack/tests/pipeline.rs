@@ -12,6 +12,8 @@ mod common;
 
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -25,9 +27,27 @@ use binary_attestation_core::{
     RelationRegistry, SignedSecuritySnapshot, VerificationInput, VerifiedClaims, VerifiedComponent,
     constant_time_eq,
 };
-use binary_attestation_dstack::{DSTACK_SUBJECT_KEY_BRC100_RELATION, DstackBrc100IdentityPolicy};
+use binary_attestation_dstack::{
+    DSTACK_SUBJECT_KEY_BRC100_RELATION, DstackBrc100IdentityPolicy, DstackSnapshotPlugins,
+};
 use common::*;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SnapshotBoundResponse {
+    public_key: String,
+    binding_digest: String,
+    bundle: EvidenceBundle,
+}
+
+fn snapshot_capture_bytes(file: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../deploy/dstack-live-probe/capture-20261006/final")
+        .join(file);
+    fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
 
 struct Counting<T>(T, AtomicUsize);
 
@@ -375,4 +395,68 @@ fn core_verifier_refuses_the_live_challenge_without_a_snapshot_commitment() {
     assert_eq!(plugins.child_calls.1.load(Ordering::SeqCst), 0);
     assert_eq!(plugins.relation_calls.1.load(Ordering::SeqCst), 0);
     assert_eq!(plugins.policy.1.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn snapshot_bound_live_capture_is_allowed_by_the_real_core_verifier() {
+    let snapshot: SignedSecuritySnapshot =
+        serde_json::from_slice(&snapshot_capture_bytes("snapshot.json")).expect("snapshot");
+    let challenge: Challenge =
+        serde_json::from_slice(&snapshot_capture_bytes("challenge.json")).expect("challenge");
+    let response: SnapshotBoundResponse =
+        serde_json::from_slice(&snapshot_capture_bytes("evidence-response.json"))
+            .expect("evidence response");
+    assert_eq!(snapshot.trust_digest, challenge.trust_digest);
+    assert_eq!(response.public_key, challenge.subject.value);
+    assert_eq!(response.bundle.subject, challenge.subject);
+    assert_eq!(
+        response.binding_digest,
+        hex_encode(&challenge.binding_digest().expect("binding digest"))
+    );
+
+    let plugins = DstackSnapshotPlugins::from_snapshot(&snapshot).expect("snapshot plugins");
+    let providers = Arc::new(ProviderRegistry::new());
+    providers
+        .register(Arc::new(plugins.parent))
+        .expect("parent");
+    providers.register(Arc::new(plugins.child)).expect("child");
+    let relations = Arc::new(RelationRegistry::new());
+    relations
+        .register(Arc::new(plugins.relation))
+        .expect("relation");
+    let now_ms = challenge.issued_at_ms.get() + 1_000;
+    let clock = Arc::new(FrozenClock(now_ms));
+    let snapshots = Arc::new(InMemorySnapshotStore::with_clock(clock.clone()));
+    snapshots.publish(snapshot).expect("publish snapshot");
+    let challenges = Arc::new(ChallengeStore::new(4, 10));
+    challenges
+        .issue(challenge.clone(), now_ms)
+        .expect("issue challenge");
+    let core = CoreVerifier::with_clock(
+        challenges,
+        snapshots,
+        providers,
+        relations,
+        Arc::new(plugins.policy),
+        clock,
+    );
+    let claims = core
+        .verify(VerificationInput {
+            authenticated_subject: &challenge.subject,
+            bundle: &response.bundle,
+            transport_context_digest: &challenge.context_digest,
+        })
+        .expect("snapshot-bound live capture allowed");
+    let parent = claims
+        .components
+        .iter()
+        .find(|component| component.component_id == PARENT_ID)
+        .expect("parent claims");
+    assert_eq!(claims.subject_binding, DSTACK_SUBJECT_KEY_BRC100_RELATION);
+    assert_eq!(parent.measurements["app_id"], APP_ID_20261006);
+    assert_eq!(parent.measurements["compose_hash"], COMPOSE_HASH_20261006);
+    assert_eq!(
+        parent.measurements["vm_config_sha256"],
+        VM_CONFIG_SHA256_20261006
+    );
 }

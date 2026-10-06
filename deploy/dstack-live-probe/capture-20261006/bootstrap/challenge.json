@@ -1,0 +1,18 @@
+{
+  "protocolVersion": 1,
+  "challengeId": "gBnKB3epdt993ZQxCEe43w",
+  "nonce": "6iTUc0mFWHoX2LutyFmf_q8QAucTREhr8KG34RFPBA4",
+  "subject": {
+    "type": "brc100-public-key",
+    "value": "0397d769d881d17f39d72b4fcfd905118459e0f988368be49502a87192618fd5c4"
+  },
+  "audience": "urn:binary:bcap1:dstack-live-core-verifier",
+  "context": "urn:binary:bcap1:dstack-live-core-verifier:quote",
+  "contextDigest": "ETqh6K20ZK11zeacGr5bA2qHmLwFzdSFDMRGmk9WyD8",
+  "policyId": "dstack-live-core-verifier-v1",
+  "policyDigest": "m7sES5x3sZ8do5KMqdad4ZFbnQRQKEuHqvh74480XSE",
+  "securityEpoch": "1791265857770",
+  "trustDigest": "my7s1oKzf7gqIp6YklMJyiFoeZNgC1l7flw--r2xfao",
+  "issuedAtMs": "1791265857770",
+  "expiresAtMs": "1791266037770"
+}

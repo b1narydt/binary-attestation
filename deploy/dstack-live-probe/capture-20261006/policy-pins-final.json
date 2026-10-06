@@ -1,0 +1,23 @@
+{
+  "allowedTcbStatuses": ["UpToDate"],
+  "allowedAdvisoryIds": [],
+  "allowedOsImageHashes": [
+    "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033"
+  ],
+  "allowedComposeHashes": [
+    "a49aa45767fc6c6fc549dbf595dead3a22d882f531a3fc0c524171c5eb2787cf"
+  ],
+  "allowedAppIds": ["fb0130ad4d6f15107991a8551b6f7fe2aa78cce0"],
+  "mrKms": "941e70ac7e0e72e858995129caab1c3d81c4c6930fb5f96e98b4e53f60f33984",
+  "allowedBootMeasurements": [
+    {
+      "mrtd": "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077",
+      "rtmr0": "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96",
+      "rtmr1": "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c",
+      "rtmr2": "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858"
+    }
+  ],
+  "allowedVmConfigDigests": [
+    "848831ae8b31ea11155965aca53602c5254782d83ca5da16bf499207221daa64"
+  ]
+}

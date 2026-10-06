@@ -1,0 +1,28 @@
+{
+  "verifierCommit": "7b6b4c717117261ce1ee0c9b3edcdd00009180d0",
+  "decision": "allowed",
+  "challengeId": "YEmblvjYTuoIYAh2uiCpzw",
+  "trustDigest": "8lN5GNsnaZjdxzhAVBIV4Yi8iFV8M5gxKesaAIq0BZI",
+  "policyDigest": "BDFhQxkZdOTv_mHacgQrbtCYHwgg9CzBMwVA_SqBwU8",
+  "bindingDigest": "BZDVba4YB2D0MBUCr4Q86nDE5BgpN3kzf_-vmG4kyD5li1WNs8eNdBQTC4-ISb5Zyv-KDn8mCm7Jqevldtk9Jg",
+  "subjectBinding": "dstack-subject-key-brc100-v1",
+  "subject": {
+    "type": "brc100-public-key",
+    "value": "0397d769d881d17f39d72b4fcfd905118459e0f988368be49502a87192618fd5c4"
+  },
+  "parent": {
+    "provider": "dstack-attest-v0",
+    "tee": "tdx",
+    "quoteVersion": 4,
+    "tdDebug": false,
+    "fmspc": "20A06F000000",
+    "tcbStatus": "UpToDate",
+    "advisories": [],
+    "appId": "fb0130ad4d6f15107991a8551b6f7fe2aa78cce0",
+    "instanceId": "ca8331cb13fa7b9d6e116434b4b1358874be4556",
+    "composeHash": "a49aa45767fc6c6fc549dbf595dead3a22d882f531a3fc0c524171c5eb2787cf",
+    "osImageHash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
+    "mrKms": "941e70ac7e0e72e858995129caab1c3d81c4c6930fb5f96e98b4e53f60f33984",
+    "vmConfigSha256": "848831ae8b31ea11155965aca53602c5254782d83ca5da16bf499207221daa64"
+  }
+}

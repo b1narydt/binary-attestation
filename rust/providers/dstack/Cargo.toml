@@ -1,0 +1,36 @@
+[package]
+name = "binary-attestation-dstack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "BCAP1 dstack 0.5.x (`dstack-attest-v0`) TDX evidence provider, subject-key relation and policy"
+
+[features]
+default = []
+# In-TEE evidence producer: an async Unix-socket client for the dstack guest
+# agent. Off by default so verifier deployments never link tokio or touch
+# `/var/run/dstack.sock`.
+producer = ["dep:tokio", "dep:zeroize"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+binary-attestation-core.workspace = true
+chrono.workspace = true
+dcap-qvl.workspace = true
+der.workspace = true
+k256 = { workspace = true, features = ["ecdsa", "std"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true, features = ["net", "io-util", "time"] }
+x509-cert.workspace = true
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "macros", "time"] }

@@ -16,7 +16,10 @@ This repository owns:
 - `vectors/` — immutable cross-language known-answer and rejection vectors;
 - `typescript/` — browser-safe `@binary/attestation` portable core;
 - `rust/core/` — provider-neutral `binary-attestation-core`;
-- later provider/runtime packages for dstack, DCAP, and NVIDIA evidence.
+- `rust/providers/dstack/` — `binary-attestation-dstack`, the dstack 0.5.x
+  `dstack-attest-v0` TDX/DCAP provider, the frozen-v0 `GetKey` subject-key
+  relation and a BRC-100 identity policy (optional in-TEE `producer`);
+- later provider/runtime packages for dstack 0.6+, DCAP, and NVIDIA evidence.
 
 It does not own Atlas Relay behavior, MPC ceremonies, provider-native host
 runtimes in browser packages, or capability/key release policy.

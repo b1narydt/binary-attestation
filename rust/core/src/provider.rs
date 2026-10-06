@@ -76,6 +76,13 @@ impl PolicyDecision {
     }
 }
 
+/// `test` as a complete segment of a delimited provider name (`test-v1`,
+/// `fixture-test-v1`, `test`), never as a substring of another word.
+fn is_reserved_test_name(name: &str) -> bool {
+    name.split(['-', '_', '.', ':', '/'])
+        .any(|segment| segment.eq_ignore_ascii_case("test"))
+}
+
 #[derive(Default)]
 pub struct ProviderRegistry {
     verifiers: RwLock<HashMap<String, Arc<dyn EvidenceVerifier>>>,
@@ -89,11 +96,13 @@ impl ProviderRegistry {
     }
 
     /// Registers a production verifier.  The core has no mock provider; names
-    /// reserved for test/mock evidence are rejected defensively.
+    /// reserved for test/mock evidence are rejected defensively.  The `test`
+    /// reservation applies to a whole name segment so that production names
+    /// such as `dstack-attest-v0` are not caught by the `attest-` substring.
     pub fn register(&self, verifier: Arc<dyn EvidenceVerifier>) -> Result<(), Denial> {
         let name = verifier.provider();
         crate::validate_text(name)?;
-        if name.is_empty() || name.contains("mock") || name.contains("test-") {
+        if name.is_empty() || name.contains("mock") || is_reserved_test_name(name) {
             return Err(Denial::UnsupportedProvider);
         }
         let mut verifiers = self.verifiers.write().map_err(|_| Denial::InternalError)?;

@@ -1,0 +1,18 @@
+{
+ "protocolVersion": 1,
+ "challengeId": "j0sH6i7_dihg4Gz3oWFvPA",
+ "nonce": "VTvYYhgvBOvYOskgf4zvO50HdMPvNIknzoFW4_FIUN0",
+ "subject": {
+  "type": "did",
+  "value": "bcap1-live-probe"
+ },
+ "audience": "urn:binary:bcap1:live-probe",
+ "context": "urn:binary:bcap1:live-probe:dstack-getquote",
+ "contextDigest": "SFFWjutQzT2f7BG_XKY_5rN4ykQod20-zX1b4RNWlO0",
+ "policyId": "bcap1-live-probe-policy",
+ "policyDigest": "rnYNkhXnGCtaywvw85OuE1lSFkrrTxAO5sCbkvfA1OU",
+ "securityEpoch": "0",
+ "trustDigest": "fRjfcFemm3E5ac_FVj5kzRpCilgktFTwqXMUNXtGL3s",
+ "issuedAtMs": "1791250153993",
+ "expiresAtMs": "1791250273993"
+}

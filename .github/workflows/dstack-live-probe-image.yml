@@ -9,7 +9,6 @@ permissions:
 
 env:
   IMAGE: ghcr.io/b1narydt/bcap1-dstack-probe:20261005
-  TTL_IMAGE: ttl.sh/bcap1-dstack-probe-4295779-01a10f43:24h
 
 jobs:
   publish:
@@ -24,7 +23,14 @@ jobs:
             --platform linux/amd64 \
             --file deploy/dstack-live-probe/Dockerfile \
             --tag "$IMAGE" \
-            --tag "$TTL_IMAGE" \
             --provenance=false \
             --push \
             .
+      - name: Resolve immutable registry digest
+        run: |
+          manifest_digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -er .digest)
+          echo "IMAGE_DIGEST=$manifest_digest" | tee -a "$GITHUB_ENV"
+          echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE@$manifest_digest" >> "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"

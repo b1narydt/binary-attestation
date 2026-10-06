@@ -9,6 +9,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/b1narydt/bcap1-dstack-probe:20261005
+  TTL_IMAGE: ttl.sh/bcap1-dstack-probe-4295779-01a10f43:24h
 
 jobs:
   publish:
@@ -23,6 +24,7 @@ jobs:
             --platform linux/amd64 \
             --file deploy/dstack-live-probe/Dockerfile \
             --tag "$IMAGE" \
+            --tag "$TTL_IMAGE" \
             --provenance=false \
             --push \
             .

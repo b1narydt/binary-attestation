@@ -28,9 +28,13 @@ serde_jcs.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, optional = true, features = ["net", "io-util", "time"] }
+tokio = { workspace = true, optional = true, features = ["net", "io-util", "time", "rt-multi-thread", "macros"] }
 x509-cert.workspace = true
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "macros", "time"] }
+
+[[example]]
+name = "live_probe"
+required-features = ["producer"]

@@ -23,11 +23,10 @@ use binary_attestation_core::{
     EvidenceBindingEdge, EvidenceBundle, EvidenceComponent, EvidenceVerifier,
     InMemorySnapshotStore, MAX_COMPONENT_EVIDENCE, PolicyEvaluator, ProviderRegistry,
     RelationRegistry, SignedSecuritySnapshot, VerificationInput, VerifiedClaims, VerifiedComponent,
-    constant_time_eq, jcs_bytes,
+    constant_time_eq,
 };
 use binary_attestation_dstack::{DSTACK_SUBJECT_KEY_BRC100_RELATION, DstackBrc100IdentityPolicy};
 use common::*;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 struct Counting<T>(T, AtomicUsize);
@@ -127,19 +126,6 @@ fn full_bundle(probe: &Probe) -> EvidenceBundle {
         vec![parent_component(probe), child_component(probe)],
         vec![edge()],
     )
-}
-
-fn snapshot(challenge: &Challenge) -> SignedSecuritySnapshot {
-    let body = json!({
-        "securityEpoch": "0", "policyId": challenge.policy_id, "policyDigest": challenge.policy_digest,
-        "providerArtifacts": [], "trustMaterial": {}, "validFromMs": "0",
-        "validUntilMs": u64::MAX.to_string(), "signerKeyId": "fixture"
-    });
-    let trust = Sha256::digest(jcs_bytes(&body).expect("jcs"));
-    serde_json::from_value(json!({
-        "body": body, "trustDigest": B64Url::from_bytes(&trust), "algorithm": "fixture", "signature": "AQ"
-    }))
-    .expect("snapshot")
 }
 
 /// Mirrors `CoreVerifier::verify_claimed` after the snapshot/epoch step.

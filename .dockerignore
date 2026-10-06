@@ -1,0 +1,7 @@
+.git
+.build-inputs
+node_modules
+target
+typescript/dist
+coverage
+*.log

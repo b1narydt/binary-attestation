@@ -617,7 +617,7 @@ fn wrong_mr_kms_pin_is_root_untrusted() {
 fn compose_hash_and_app_id_allowlists_are_enforced() {
     let probe = probe_did();
     let mut trust = trust();
-    trust.allowed_compose_hashes = Some(BTreeSet::from([[0x11; 32]]));
+    trust.allowed_compose_hashes = BTreeSet::from([[0x11; 32]]);
     let verifier = DstackAttestV0Verifier::new(trust).expect("verifier");
     assert_eq!(
         verify(&verifier, &probe).err(),
@@ -633,9 +633,8 @@ fn compose_hash_and_app_id_allowlists_are_enforced() {
     );
 
     let mut trust = common::trust();
-    trust.allowed_compose_hashes = Some(BTreeSet::from([hex_decode(COMPOSE_HASH)
-        .try_into()
-        .expect("32")]));
+    trust.allowed_compose_hashes =
+        BTreeSet::from([hex_decode(COMPOSE_HASH).try_into().expect("32")]);
     trust.allowed_app_ids = Some(BTreeSet::from([hex_decode(APP_ID).try_into().expect("20")]));
     let verifier = DstackAttestV0Verifier::new(trust).expect("verifier");
     verify(&verifier, &probe).expect("matching allowlists");
@@ -657,6 +656,12 @@ fn verifier_construction_refuses_incomplete_trust() {
     ));
     let mut trust = common::trust();
     trust.allowed_tcb_statuses.clear();
+    assert!(matches!(
+        DstackAttestV0Verifier::new(trust),
+        Err(Denial::VerifierUnavailable)
+    ));
+    let mut trust = common::trust();
+    trust.allowed_compose_hashes.clear();
     assert!(matches!(
         DstackAttestV0Verifier::new(trust),
         Err(Denial::VerifierUnavailable)

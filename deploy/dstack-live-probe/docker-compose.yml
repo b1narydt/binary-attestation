@@ -1,0 +1,8 @@
+services:
+  probe:
+    image: ghcr.io/mitch-burcham/bcap1-dstack-probe:20261005
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock:ro

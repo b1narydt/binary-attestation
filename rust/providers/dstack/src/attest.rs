@@ -125,7 +125,7 @@ impl DstackAttestV0Verifier {
         if !constant_time_eq(&td.report_data, &expected_binding) {
             return Err(Denial::BindingMismatch);
         }
-        if !self.trust.allowed_tcb_statuses.contains(&report.status) {
+        if !tcb_posture_allowed(&self.trust, &report.status, &report.advisory_ids) {
             return Err(Denial::TcbDisallowed);
         }
 
@@ -161,11 +161,10 @@ impl DstackAttestV0Verifier {
         {
             return Err(Denial::MeasurementMismatch);
         }
-        if self
+        if !self
             .trust
             .allowed_compose_hashes
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&launch.compose_hash))
+            .contains(&launch.compose_hash)
             || self
                 .trust
                 .allowed_app_ids
@@ -288,6 +287,13 @@ fn decimal(value: u64) -> Result<U64Decimal, Denial> {
     U64Decimal::new(&value.to_string())
 }
 
+fn tcb_posture_allowed(trust: &DstackTrust, status: &str, advisory_ids: &[String]) -> bool {
+    trust.allowed_tcb_statuses.contains(status)
+        && advisory_ids
+            .iter()
+            .all(|advisory| trust.allowed_advisory_ids.contains(advisory))
+}
+
 /// Maps `dcap-qvl`'s stringly errors onto §10 denial classes. The default is
 /// `signature_invalid` (authentication failed) rather than anything softer.
 fn classify_dcap_error(error: &anyhow::Error) -> Denial {
@@ -349,5 +355,24 @@ mod tests {
         );
         assert_eq!(classify("Debug mode is enabled"), Denial::DebugMode);
         assert_eq!(classify("something else"), Denial::SignatureInvalid);
+    }
+
+    #[test]
+    fn tcb_posture_requires_every_advisory_to_be_explicitly_allowed() {
+        let mut trust = DstackTrust::new(crate::KmsPins {
+            ca_spki_der: vec![],
+            k256_root: [0; 33],
+            mr_kms: None,
+        });
+        let advisory = "INTEL-SA-00000".to_owned();
+        assert!(tcb_posture_allowed(&trust, "UpToDate", &[]));
+        assert!(!tcb_posture_allowed(
+            &trust,
+            "UpToDate",
+            std::slice::from_ref(&advisory)
+        ));
+        trust.allowed_advisory_ids.insert(advisory.clone());
+        assert!(tcb_posture_allowed(&trust, "UpToDate", &[advisory]));
+        assert!(!tcb_posture_allowed(&trust, "OutOfDate", &[]));
     }
 }

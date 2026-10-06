@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use binary_attestation_core::{EvidenceVerifier, MAX_COMPONENT_EVIDENCE, jcs_bytes};
 use binary_attestation_dstack::{
@@ -41,10 +41,14 @@ fn recoverable(key: &SigningKey, message: &[u8]) -> Vec<u8> {
 
 impl FakeAgent {
     fn spawn(self) -> tokio::task::JoinHandle<Vec<String>> {
+        self.spawn_requests(2)
+    }
+
+    fn spawn_requests(self, request_count: usize) -> tokio::task::JoinHandle<Vec<String>> {
         let listener = UnixListener::bind(&self.socket).expect("bind");
         tokio::spawn(async move {
             let mut seen = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..request_count {
                 let (mut stream, _) = listener.accept().await.expect("accept");
                 let mut raw = Vec::new();
                 let mut buffer = [0u8; 4096];
@@ -124,6 +128,39 @@ fn socket_path(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bcap1-dstack-{}-{name}", std::process::id()));
     let _ = std::fs::remove_file(&dir);
     dir
+}
+
+#[tokio::test]
+async fn subject_public_key_returns_only_the_compressed_identity() {
+    let probe = probe_did();
+    let socket = socket_path("subject-public-key");
+    let identity_key = SigningKey::from_slice(&[7u8; 32]).expect("key");
+    let private_hex = hex_encode(&identity_key.to_bytes());
+    let expected_public_key = hex_encode(
+        &identity_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .to_bytes(),
+    );
+    let agent = FakeAgent {
+        socket: socket.clone(),
+        app_key: SigningKey::from_slice(&[9u8; 32]).expect("key"),
+        identity_key,
+        envelope: probe.envelope,
+        expected_report_data: hex_encode(&probe.binding),
+    }
+    .spawn_requests(1);
+
+    let public_key = DstackAttestV0Producer::new(&socket)
+        .subject_public_key()
+        .await
+        .expect("public key");
+    let seen = agent.await.expect("agent task");
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].starts_with("POST /GetKey "));
+    assert_eq!(public_key, expected_public_key);
+    assert!(!public_key.contains(&private_hex));
+    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -239,5 +276,34 @@ async fn producer_refuses_an_attestation_whose_report_data_is_not_the_binding() 
         .expect_err("report_data mismatch");
     assert!(matches!(error, ProduceError::Agent(_)), "{error}");
     agent.abort();
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn producer_times_out_when_the_guest_agent_stalls() {
+    let probe = probe_did();
+    let socket = socket_path("timeout");
+    let listener = UnixListener::bind(&socket).expect("bind");
+    let stalled = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.expect("accept");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    });
+
+    let error = DstackAttestV0Producer::new(&socket)
+        .with_timeout(Duration::from_millis(20))
+        .produce(probe.binding)
+        .await
+        .expect_err("stalled agent must time out");
+    assert!(
+        matches!(
+            error,
+            ProduceError::Timeout {
+                ref endpoint,
+                phase: "read"
+            } if endpoint == "/Attest"
+        ),
+        "{error}"
+    );
+    stalled.abort();
     let _ = std::fs::remove_file(&socket);
 }

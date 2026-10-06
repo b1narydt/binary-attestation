@@ -3,19 +3,16 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
 use binary_attestation_core::{
-    B64Url, BindingRelationVerifier, Challenge, Denial, EvidenceVerifier, PolicyEvaluator,
-    SignedSecuritySnapshot, VerifiedComponent, jcs_bytes,
+    BindingRelationVerifier, Denial, EvidenceVerifier, PolicyEvaluator, SignedSecuritySnapshot,
+    VerifiedComponent,
 };
 use binary_attestation_dstack::{
     BootMeasurements, DSTACK_SUBJECT_KEY_BRC100_RELATION, DstackBrc100IdentityPolicy,
-    scale::LegacyAttestationV0,
+    DstackPolicyArtifactV1, DstackSnapshotPlugins, scale::LegacyAttestationV0,
 };
 use common::*;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 fn verified_claims(probe: &Probe) -> Vec<VerifiedComponent> {
     let parent = attest_verifier()
@@ -28,21 +25,6 @@ fn verified_claims(probe: &Probe) -> Vec<VerifiedComponent> {
         .verify(&parent, &child, &edge(), probe.binding, probe.now_ms())
         .expect("relation");
     vec![parent, child]
-}
-
-/// A snapshot the policy can see. The live probe challenges do not commit to
-/// a snapshot body (see `pipeline.rs`), so this one is only policy input.
-fn snapshot(challenge: &Challenge) -> SignedSecuritySnapshot {
-    let body = json!({
-        "securityEpoch": "0", "policyId": challenge.policy_id, "policyDigest": challenge.policy_digest,
-        "providerArtifacts": [], "trustMaterial": {"dstack": {"profile": "dstack-attest-v0"}},
-        "validFromMs": "0", "validUntilMs": u64::MAX.to_string(), "signerKeyId": "fixture"
-    });
-    let trust = Sha256::digest(jcs_bytes(&body).expect("jcs"));
-    serde_json::from_value(json!({
-        "body": body, "trustDigest": B64Url::from_bytes(&trust), "algorithm": "fixture", "signature": "AQ"
-    }))
-    .expect("snapshot")
 }
 
 /// Evaluates and flattens the decision so denials compare structurally.
@@ -59,6 +41,28 @@ fn evaluate(
             probe.now_ms(),
         )
         .map(|decision| (decision.subject_binding, decision.valid_until_ms))
+}
+
+fn evaluate_at(
+    policy: &DstackBrc100IdentityPolicy,
+    probe: &Probe,
+    claims: &[VerifiedComponent],
+    snapshot: &SignedSecuritySnapshot,
+) -> Result<(String, u64), Denial> {
+    policy
+        .evaluate(&probe.challenge, claims, snapshot, probe.now_ms())
+        .map(|decision| (decision.subject_binding, decision.valid_until_ms))
+}
+
+fn configured_policy(
+    probe: &Probe,
+    artifact: DstackPolicyArtifactV1,
+) -> (DstackBrc100IdentityPolicy, SignedSecuritySnapshot) {
+    let snapshot = snapshot_with_artifact(&probe.challenge, artifact);
+    let policy = DstackSnapshotPlugins::from_snapshot(&snapshot)
+        .expect("snapshot plugins")
+        .policy;
+    (policy, snapshot)
 }
 
 #[test]
@@ -161,27 +165,28 @@ fn mock_or_foreign_provider_claims_are_unsupported_provider() {
 fn os_image_compose_and_app_id_allowlists_are_enforced() {
     let probe = probe_brc100();
     let claims = verified_claims(&probe);
-    let dev_only = DstackBrc100IdentityPolicy::new(BTreeSet::from([DEV_OS_IMAGE_HASH.to_owned()]));
+    let mut artifact = policy_artifact();
+    artifact.allowed_os_image_hashes = vec![DEV_OS_IMAGE_HASH.into()];
+    let (dev_only, dev_snapshot) = configured_policy(&probe, artifact);
     assert_eq!(
-        evaluate(&dev_only, &probe, &claims),
+        evaluate_at(&dev_only, &probe, &claims, &dev_snapshot),
         Err(Denial::MeasurementMismatch)
     );
-    let mut policy = policy();
-    policy.allowed_compose_hashes = Some(BTreeSet::from(["00".repeat(32)]));
+    let mut artifact = policy_artifact();
+    artifact.allowed_compose_hashes = vec!["00".repeat(32)];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
     assert_eq!(
-        evaluate(&policy, &probe, &claims),
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
         Err(Denial::MeasurementMismatch)
     );
-    let mut policy = common::policy();
-    policy.allowed_app_ids = Some(BTreeSet::from(["00".repeat(20)]));
+    let mut artifact = policy_artifact();
+    artifact.allowed_app_ids = vec!["00".repeat(20)];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
     assert_eq!(
-        evaluate(&policy, &probe, &claims),
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
         Err(Denial::MeasurementMismatch)
     );
-    let mut policy = common::policy();
-    policy.allowed_compose_hashes = Some(BTreeSet::from([COMPOSE_HASH.to_owned()]));
-    policy.allowed_app_ids = Some(BTreeSet::from([APP_ID.to_owned()]));
-    evaluate(&policy, &probe, &claims).expect("matching allowlists");
+    evaluate(&common::policy(), &probe, &claims).expect("matching allowlists");
 }
 
 #[test]
@@ -194,14 +199,17 @@ fn boot_measurement_pins_are_enforced() {
         rtmr1: claims[0].measurements["rtmr1"].as_str().unwrap().into(),
         rtmr2: claims[0].measurements["rtmr2"].as_str().unwrap().into(),
     };
-    let mut policy = policy();
-    policy.allowed_boot_measurements = Some(BTreeSet::from([live.clone()]));
-    evaluate(&policy, &probe, &claims).expect("live boot measurements");
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![live.clone()];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    evaluate_at(&policy, &probe, &claims, &policy_snapshot).expect("live boot measurements");
     let mut other = live;
     other.rtmr1 = "00".repeat(48);
-    policy.allowed_boot_measurements = Some(BTreeSet::from([other]));
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![other];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
     assert_eq!(
-        evaluate(&policy, &probe, &claims),
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
         Err(Denial::MeasurementMismatch)
     );
 }
@@ -214,9 +222,10 @@ fn vm_config_digest_pin_refuses_an_unmeasured_config_tamper() {
         .as_str()
         .unwrap()
         .to_owned();
-    let mut policy = policy();
-    policy.allowed_vm_config_digests = Some(BTreeSet::from([digest]));
-    evaluate(&policy, &probe, &claims).expect("live config");
+    let mut artifact = policy_artifact();
+    artifact.allowed_vm_config_digests = vec![digest];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    evaluate_at(&policy, &probe, &claims, &policy_snapshot).expect("live config");
 
     let mut envelope = LegacyAttestationV0::decode(&probe.envelope).expect("decode");
     envelope.config = envelope
@@ -231,18 +240,41 @@ fn vm_config_digest_pin_refuses_an_unmeasured_config_tamper() {
         .expect("config is not quote-measured on 0.5.x");
     let claims = vec![tampered_parent, claims[1].clone()];
     assert_eq!(
-        evaluate(&policy, &probe, &claims),
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
         Err(Denial::MeasurementMismatch)
     );
 }
 
 #[test]
-fn policy_refuses_an_empty_os_image_allowlist() {
+fn snapshot_plugin_construction_refuses_incomplete_or_duplicate_policy() {
+    let probe = probe_brc100();
+    let mut artifact = policy_artifact();
+    artifact.allowed_os_image_hashes.clear();
+    let snapshot = snapshot_with_artifact(&probe.challenge, artifact);
+    assert!(matches!(
+        DstackSnapshotPlugins::from_snapshot(&snapshot),
+        Err(Denial::VerifierUnavailable)
+    ));
+
+    let mut artifact = policy_artifact();
+    artifact.allowed_compose_hashes.push(COMPOSE_HASH.into());
+    let snapshot = snapshot_with_artifact(&probe.challenge, artifact);
+    assert!(matches!(
+        DstackSnapshotPlugins::from_snapshot(&snapshot),
+        Err(Denial::Malformed)
+    ));
+}
+
+#[test]
+fn policy_refuses_a_different_valid_snapshot_than_the_one_that_built_it() {
     let probe = probe_brc100();
     let claims = verified_claims(&probe);
-    let policy = DstackBrc100IdentityPolicy::new(BTreeSet::new());
+    let policy = policy();
+    let mut artifact = policy_artifact();
+    artifact.allowed_os_image_hashes = vec![DEV_OS_IMAGE_HASH.into()];
+    let other = snapshot_with_artifact(&probe.challenge, artifact);
     assert_eq!(
-        evaluate(&policy, &probe, &claims),
-        Err(Denial::PolicyUnknown)
+        evaluate_at(&policy, &probe, &claims, &other),
+        Err(Denial::SecurityEpochChanged)
     );
 }

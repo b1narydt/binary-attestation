@@ -39,6 +39,11 @@
 //! The child never binds the BCAP1 digest directly (its `binding_digest` is
 //! all zero) so the core accepts it only through a verified relation edge from
 //! a bound dstack parent.
+//!
+//! Production core verifiers should construct the parent, child, relation and
+//! policy together with [`DstackSnapshotPlugins::from_snapshot`]. Its canonical
+//! provider artifact commits collateral, roots, TCB/advisory posture and the
+//! complete workload/boot allowlists to the challenge's `trustDigest`.
 
 #![forbid(unsafe_code)]
 
@@ -52,6 +57,7 @@ mod policy;
 pub mod producer;
 mod relation;
 pub mod scale;
+mod snapshot;
 mod subject_key_verifier;
 mod trust;
 
@@ -59,6 +65,10 @@ pub use attest::{DSTACK_ATTEST_V0_MEDIA_TYPE, DSTACK_ATTEST_V0_PROVIDER, DstackA
 pub use collateral::PinnedCollateral;
 pub use policy::{BootMeasurements, DstackBrc100IdentityPolicy};
 pub use relation::{DSTACK_SUBJECT_KEY_BRC100_RELATION, DstackSubjectKeyBrc100Relation};
+pub use snapshot::{
+    DSTACK_POLICY_ARTIFACT_CANONICALIZATION, DSTACK_POLICY_ARTIFACT_MEDIA_TYPE, DcapRootV1,
+    DstackPolicyArtifactV1, DstackSnapshotPlugins,
+};
 pub use subject_key_verifier::{
     DSTACK_SUBJECT_KEY_MEDIA_TYPE, DSTACK_SUBJECT_KEY_V0_PROVIDER, DstackSubjectKeyV0Verifier,
     SUBJECT_KEY_PURPOSE, SubjectKeyEvidence, subject_proof_digest,

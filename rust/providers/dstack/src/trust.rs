@@ -45,12 +45,15 @@ pub struct DstackTrust {
     /// Pinned collateral, one entry per FMSPC. A quote whose FMSPC has no
     /// entry is refused (`endorsements_missing`).
     pub collateral: Vec<PinnedCollateral>,
-    /// Accepted DCAP TCB statuses (default `UpToDate`, `SWHardeningNeeded`).
+    /// Accepted DCAP TCB statuses (default `UpToDate`).
     pub allowed_tcb_statuses: BTreeSet<String>,
+    /// Accepted Intel advisory identifiers. An empty set accepts only reports
+    /// with no advisory identifiers.
+    pub allowed_advisory_ids: BTreeSet<String>,
     /// Accepted `os-image-hash` launch values (required, non-empty).
     pub allowed_os_image_hashes: BTreeSet<[u8; 32]>,
-    /// Optional `compose-hash` allowlist.
-    pub allowed_compose_hashes: Option<BTreeSet<[u8; 32]>>,
+    /// Accepted workload `compose-hash` values (required, non-empty).
+    pub allowed_compose_hashes: BTreeSet<[u8; 32]>,
     /// Optional `app-id` allowlist.
     pub allowed_app_ids: Option<BTreeSet<[u8; 20]>>,
     pub kms: KmsPins,
@@ -61,9 +64,10 @@ impl DstackTrust {
         Self {
             root_ca_der: None,
             collateral: Vec::new(),
-            allowed_tcb_statuses: BTreeSet::from(["UpToDate".into(), "SWHardeningNeeded".into()]),
+            allowed_tcb_statuses: BTreeSet::from(["UpToDate".into()]),
+            allowed_advisory_ids: BTreeSet::new(),
             allowed_os_image_hashes: BTreeSet::new(),
-            allowed_compose_hashes: None,
+            allowed_compose_hashes: BTreeSet::new(),
             allowed_app_ids: None,
             kms,
         }
@@ -74,10 +78,7 @@ impl DstackTrust {
         if self.collateral.is_empty()
             || self.allowed_tcb_statuses.is_empty()
             || self.allowed_os_image_hashes.is_empty()
-            || self
-                .allowed_compose_hashes
-                .as_ref()
-                .is_some_and(BTreeSet::is_empty)
+            || self.allowed_compose_hashes.is_empty()
             || self
                 .allowed_app_ids
                 .as_ref()

@@ -5,18 +5,21 @@
 //! from the live bytes inside the individual tests.
 #![allow(dead_code)]
 
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use binary_attestation_core::{
-    B64Url, Challenge, Clock, Denial, EvidenceBindingEdge, EvidenceComponent, jcs_bytes,
+    B64Url, Challenge, Clock, Denial, EvidenceBindingEdge, EvidenceComponent,
+    SignedSecuritySnapshot, jcs_bytes,
 };
 use binary_attestation_dstack::{
-    DSTACK_ATTEST_V0_MEDIA_TYPE, DSTACK_ATTEST_V0_PROVIDER, DSTACK_SUBJECT_KEY_BRC100_RELATION,
-    DSTACK_SUBJECT_KEY_MEDIA_TYPE, DSTACK_SUBJECT_KEY_V0_PROVIDER, DstackAttestV0Verifier,
-    DstackBrc100IdentityPolicy, DstackSubjectKeyBrc100Relation, DstackSubjectKeyV0Verifier,
-    DstackTrust, KmsPins, PinnedCollateral,
+    BootMeasurements, DSTACK_ATTEST_V0_MEDIA_TYPE, DSTACK_ATTEST_V0_PROVIDER,
+    DSTACK_SUBJECT_KEY_BRC100_RELATION, DSTACK_SUBJECT_KEY_MEDIA_TYPE,
+    DSTACK_SUBJECT_KEY_V0_PROVIDER, DcapRootV1, DstackAttestV0Verifier, DstackBrc100IdentityPolicy,
+    DstackPolicyArtifactV1, DstackSnapshotPlugins, DstackSubjectKeyBrc100Relation,
+    DstackSubjectKeyV0Verifier, DstackTrust, KmsPins, PinnedCollateral,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use x509_cert::der::{DecodePem, Encode};
 
 pub const PARENT_ID: &str = "dstack-cvm";
@@ -188,6 +191,9 @@ pub fn trust() -> DstackTrust {
         .allowed_os_image_hashes
         .insert(hex_decode(PROD_OS_IMAGE_HASH).try_into().expect("32"));
     trust
+        .allowed_compose_hashes
+        .insert(hex_decode(COMPOSE_HASH).try_into().expect("32"));
+    trust
 }
 
 pub fn attest_verifier() -> DstackAttestV0Verifier {
@@ -203,7 +209,82 @@ pub fn relation() -> DstackSubjectKeyBrc100Relation {
 }
 
 pub fn policy() -> DstackBrc100IdentityPolicy {
-    DstackBrc100IdentityPolicy::new(BTreeSet::from([PROD_OS_IMAGE_HASH.to_owned()]))
+    DstackSnapshotPlugins::from_snapshot(&snapshot(&probe_brc100().challenge))
+        .expect("snapshot plugins")
+        .policy
+}
+
+pub fn boot_measurements() -> BootMeasurements {
+    let info: serde_json::Value =
+        serde_json::from_slice(&fixture_bytes("info.json")).expect("info.json");
+    let tcb = match &info["tcb_info"] {
+        serde_json::Value::String(text) => {
+            serde_json::from_str::<serde_json::Value>(text).expect("tcb_info json")
+        }
+        other => other.clone(),
+    };
+    let value = |key: &str| {
+        tcb[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} measurement"))
+            .to_owned()
+    };
+    BootMeasurements {
+        mrtd: value("mrtd"),
+        rtmr0: value("rtmr0"),
+        rtmr1: value("rtmr1"),
+        rtmr2: value("rtmr2"),
+    }
+}
+
+pub fn policy_artifact() -> DstackPolicyArtifactV1 {
+    let kms = kms_pins();
+    DstackPolicyArtifactV1 {
+        profile: DSTACK_ATTEST_V0_PROVIDER.into(),
+        dcap_root: DcapRootV1::IntelSgxRootCaProd,
+        collateral_json: vec![B64Url::from_bytes(&fixture_bytes("collateral.json"))],
+        allowed_tcb_statuses: vec!["UpToDate".into()],
+        allowed_advisory_ids: vec![],
+        allowed_os_image_hashes: vec![PROD_OS_IMAGE_HASH.into()],
+        allowed_compose_hashes: vec![COMPOSE_HASH.into()],
+        allowed_app_ids: vec![APP_ID.into()],
+        kms_ca_spki_der: B64Url::from_bytes(&kms.ca_spki_der),
+        kms_k256_root: hex_encode(&kms.k256_root),
+        mr_kms: kms.mr_kms.map(|value| hex_encode(&value)),
+        allowed_boot_measurements: vec![boot_measurements()],
+        allowed_vm_config_digests: vec![],
+    }
+}
+
+pub fn snapshot(challenge: &Challenge) -> SignedSecuritySnapshot {
+    snapshot_with_artifact(challenge, policy_artifact())
+}
+
+pub fn snapshot_with_artifact(
+    challenge: &Challenge,
+    artifact: DstackPolicyArtifactV1,
+) -> SignedSecuritySnapshot {
+    let provider_artifact = artifact
+        .to_provider_artifact("dstack-attest-v0-policy")
+        .expect("provider artifact");
+    let body = serde_json::json!({
+        "securityEpoch": challenge.security_epoch,
+        "policyId": challenge.policy_id,
+        "policyDigest": challenge.policy_digest,
+        "providerArtifacts": [provider_artifact],
+        "trustMaterial": {},
+        "validFromMs": "0",
+        "validUntilMs": u64::MAX.to_string(),
+        "signerKeyId": "fixture"
+    });
+    let trust = Sha256::digest(jcs_bytes(&body).expect("jcs"));
+    serde_json::from_value(serde_json::json!({
+        "body": body,
+        "trustDigest": B64Url::from_bytes(&trust),
+        "algorithm": "fixture",
+        "signature": "AQ"
+    }))
+    .expect("snapshot")
 }
 
 pub fn parent_component(probe: &Probe) -> EvidenceComponent {

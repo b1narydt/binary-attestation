@@ -7,7 +7,10 @@
 //! proof and assembles the child plus the relation edge. The private key is
 //! zeroized on every path and never appears in errors or output.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use binary_attestation_core::{B64Url, EvidenceBindingEdge, EvidenceComponent};
 use k256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
@@ -30,6 +33,7 @@ pub const DSTACK_SUBJECT_KEY_COMPONENT_ID: &str = "dstack-subject-key";
 /// Frozen-v0 request; only `purpose` is authenticated by the chain.
 pub const IDENTITY_KEY_PATH: &str = "brc100-identity";
 pub const IDENTITY_KEY_ALGORITHM: &str = "secp256k1";
+pub const DEFAULT_AGENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Largest guest-agent response accepted.
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -39,6 +43,11 @@ pub enum ProduceError {
     SocketUnavailable { path: String, reason: String },
     #[error("dstack guest agent transport: {0}")]
     Transport(String),
+    #[error("dstack guest agent {endpoint} timed out during {phase}")]
+    Timeout {
+        endpoint: String,
+        phase: &'static str,
+    },
     /// The agent answered but not with what the profile needs. Never carries
     /// a response body.
     #[error("dstack guest agent: {0}")]
@@ -70,6 +79,7 @@ struct GetKeyResponse {
 
 pub struct DstackAttestV0Producer {
     socket_path: PathBuf,
+    timeout: Duration,
 }
 
 impl Default for DstackAttestV0Producer {
@@ -82,7 +92,29 @@ impl DstackAttestV0Producer {
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
+            timeout: DEFAULT_AGENT_TIMEOUT,
         }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Resolve the app-bound BRC-100 subject key without releasing its private
+    /// scalar. Relying parties use this before issuing a subject-specific
+    /// challenge; the later [`Self::produce`] call obtains the same deterministic
+    /// dstack key again and proves its relation to the quote-authenticated app.
+    pub async fn subject_public_key(&self) -> Result<String, ProduceError> {
+        let (signing_key, _) = self.identity_material().await?;
+        let public_key = hex::encode(
+            signing_key
+                .verifying_key()
+                .to_encoded_point(true)
+                .as_bytes(),
+        );
+        drop(signing_key);
+        Ok(public_key)
     }
 
     pub async fn produce(
@@ -105,43 +137,7 @@ impl DstackAttestV0Producer {
             ));
         }
 
-        let get_key: GetKeyResponse = self
-            .post_json(
-                "/GetKey",
-                &serde_json::json!({
-                    "path": IDENTITY_KEY_PATH,
-                    "purpose": crate::SUBJECT_KEY_PURPOSE,
-                    "algorithm": IDENTITY_KEY_ALGORITHM,
-                }),
-            )
-            .await?;
-        let mut key_hex = Zeroizing::new(get_key.key);
-        let key_bytes = Zeroizing::new(
-            hex::decode_any(&key_hex)
-                .ok_or_else(|| ProduceError::Agent("/GetKey key is not hex".into()))?,
-        );
-        key_hex.clear();
-        let signing_key = SigningKey::from_slice(&key_bytes)
-            .map_err(|_| ProduceError::Agent("/GetKey key is not a secp256k1 scalar".into()))?;
-        drop(key_bytes);
-        if get_key.signature_chain.len() != 2 {
-            return Err(ProduceError::Agent(
-                "/GetKey signature_chain is not the frozen-v0 two-link chain".into(),
-            ));
-        }
-        let chain = get_key
-            .signature_chain
-            .iter()
-            .map(|link| {
-                hex::decode_any(link)
-                    .filter(|bytes| bytes.len() == 65)
-                    .map(|bytes| B64Url::from_bytes(&bytes))
-                    .ok_or_else(|| {
-                        ProduceError::Agent("/GetKey chain link is not 65 hex bytes".into())
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
+        let (signing_key, chain) = self.identity_material().await?;
         let public_key = hex::encode(
             signing_key
                 .verifying_key()
@@ -189,13 +185,58 @@ impl DstackAttestV0Producer {
         })
     }
 
+    async fn identity_material(&self) -> Result<(SigningKey, Vec<B64Url>), ProduceError> {
+        let get_key: GetKeyResponse = self
+            .post_json(
+                "/GetKey",
+                &serde_json::json!({
+                    "path": IDENTITY_KEY_PATH,
+                    "purpose": crate::SUBJECT_KEY_PURPOSE,
+                    "algorithm": IDENTITY_KEY_ALGORITHM,
+                }),
+            )
+            .await?;
+        let mut key_hex = Zeroizing::new(get_key.key);
+        let key_bytes = Zeroizing::new(
+            hex::decode_any(&key_hex)
+                .ok_or_else(|| ProduceError::Agent("/GetKey key is not hex".into()))?,
+        );
+        key_hex.clear();
+        let signing_key = SigningKey::from_slice(&key_bytes)
+            .map_err(|_| ProduceError::Agent("/GetKey key is not a secp256k1 scalar".into()))?;
+        drop(key_bytes);
+        if get_key.signature_chain.len() != 2 {
+            return Err(ProduceError::Agent(
+                "/GetKey signature_chain is not the frozen-v0 two-link chain".into(),
+            ));
+        }
+        let chain = get_key
+            .signature_chain
+            .iter()
+            .map(|link| {
+                hex::decode_any(link)
+                    .filter(|bytes| bytes.len() == 65)
+                    .map(|bytes| B64Url::from_bytes(&bytes))
+                    .ok_or_else(|| {
+                        ProduceError::Agent("/GetKey chain link is not 65 hex bytes".into())
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((signing_key, chain))
+    }
+
     async fn post_json<T: serde::de::DeserializeOwned>(
         &self,
         endpoint: &str,
         body: &serde_json::Value,
     ) -> Result<T, ProduceError> {
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut stream = tokio::time::timeout(self.timeout, UnixStream::connect(&self.socket_path))
             .await
+            .map_err(|_| ProduceError::Timeout {
+                endpoint: endpoint.to_owned(),
+                phase: "connect",
+            })?
             .map_err(|error| ProduceError::SocketUnavailable {
                 path: self.socket_path.display().to_string(),
                 reason: error.to_string(),
@@ -205,16 +246,26 @@ impl DstackAttestV0Producer {
             "POST {endpoint} HTTP/1.1\r\nHost: dstack\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
             payload.len()
         );
-        stream
-            .write_all(request.as_bytes())
+        tokio::time::timeout(self.timeout, stream.write_all(request.as_bytes()))
             .await
+            .map_err(|_| ProduceError::Timeout {
+                endpoint: endpoint.to_owned(),
+                phase: "write",
+            })?
             .map_err(|error| ProduceError::Transport(format!("write {endpoint}: {error}")))?;
         let mut response = Zeroizing::new(Vec::new());
-        stream
-            .take(MAX_RESPONSE_BYTES as u64 + 1)
-            .read_to_end(&mut response)
-            .await
-            .map_err(|error| ProduceError::Transport(format!("read {endpoint}: {error}")))?;
+        tokio::time::timeout(
+            self.timeout,
+            stream
+                .take(MAX_RESPONSE_BYTES as u64 + 1)
+                .read_to_end(&mut response),
+        )
+        .await
+        .map_err(|_| ProduceError::Timeout {
+            endpoint: endpoint.to_owned(),
+            phase: "read",
+        })?
+        .map_err(|error| ProduceError::Transport(format!("read {endpoint}: {error}")))?;
         if response.len() > MAX_RESPONSE_BYTES {
             return Err(ProduceError::Transport(format!(
                 "{endpoint}: response too large"

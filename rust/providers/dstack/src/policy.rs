@@ -9,7 +9,8 @@
 use std::collections::BTreeSet;
 
 use binary_attestation_core::{
-    Challenge, Denial, PolicyDecision, PolicyEvaluator, SignedSecuritySnapshot, VerifiedComponent,
+    B64Url, Challenge, Denial, PolicyDecision, PolicyEvaluator, SignedSecuritySnapshot, U64Decimal,
+    VerifiedComponent,
 };
 
 use crate::{
@@ -17,7 +18,8 @@ use crate::{
 };
 
 /// One accepted boot-measurement tuple (lowercase hex of 48-byte registers).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BootMeasurements {
     pub mrtd: String,
     pub rtmr0: String,
@@ -28,24 +30,60 @@ pub struct BootMeasurements {
 #[derive(Debug, Clone)]
 pub struct DstackBrc100IdentityPolicy {
     /// Accepted `os_image_hash` values (lowercase hex). Required, non-empty.
-    pub allowed_os_image_hashes: BTreeSet<String>,
-    pub allowed_compose_hashes: Option<BTreeSet<String>>,
-    pub allowed_app_ids: Option<BTreeSet<String>>,
+    pub(crate) allowed_os_image_hashes: BTreeSet<String>,
+    /// Accepted workload compose hashes. Required, non-empty.
+    pub(crate) allowed_compose_hashes: BTreeSet<String>,
+    pub(crate) allowed_app_ids: Option<BTreeSet<String>>,
     /// Optional pins of the firmware/kernel/initrd registers, the 0.5.x
     /// equivalent of the `dstack-mr` derivation from the OS image.
-    pub allowed_boot_measurements: Option<BTreeSet<BootMeasurements>>,
+    pub(crate) allowed_boot_measurements: BTreeSet<BootMeasurements>,
     /// Optional pins of `vm_config_sha256` (the carried, unmeasured config).
-    pub allowed_vm_config_digests: Option<BTreeSet<String>>,
+    pub(crate) allowed_vm_config_digests: Option<BTreeSet<String>>,
+    snapshot: SnapshotBinding,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SnapshotBinding {
+    security_epoch: U64Decimal,
+    policy_id: String,
+    policy_digest: B64Url,
+    trust_digest: B64Url,
+}
+
+impl SnapshotBinding {
+    pub(crate) fn new(snapshot: &SignedSecuritySnapshot) -> Self {
+        Self {
+            security_epoch: snapshot.body.security_epoch,
+            policy_id: snapshot.body.policy_id.clone(),
+            policy_digest: snapshot.body.policy_digest.clone(),
+            trust_digest: snapshot.trust_digest.clone(),
+        }
+    }
+
+    fn matches(&self, snapshot: &SignedSecuritySnapshot) -> bool {
+        self.security_epoch == snapshot.body.security_epoch
+            && self.policy_id == snapshot.body.policy_id
+            && self.policy_digest == snapshot.body.policy_digest
+            && self.trust_digest == snapshot.trust_digest
+    }
 }
 
 impl DstackBrc100IdentityPolicy {
-    pub fn new(allowed_os_image_hashes: BTreeSet<String>) -> Self {
+    pub(crate) fn from_snapshot_parts(
+        allowed_os_image_hashes: BTreeSet<String>,
+        allowed_compose_hashes: BTreeSet<String>,
+        allowed_app_ids: Option<BTreeSet<String>>,
+        allowed_boot_measurements: BTreeSet<BootMeasurements>,
+        allowed_vm_config_digests: Option<BTreeSet<String>>,
+        snapshot: &SignedSecuritySnapshot,
+    ) -> Self {
         Self {
             allowed_os_image_hashes,
-            allowed_compose_hashes: None,
-            allowed_app_ids: None,
-            allowed_boot_measurements: None,
-            allowed_vm_config_digests: None,
+            allowed_compose_hashes,
+            allowed_app_ids,
+            allowed_boot_measurements,
+            allowed_vm_config_digests,
+            snapshot: SnapshotBinding::new(snapshot),
         }
     }
 }
@@ -67,28 +105,25 @@ impl PolicyEvaluator for DstackBrc100IdentityPolicy {
         &self,
         challenge: &Challenge,
         claims: &[VerifiedComponent],
-        _snapshot: &SignedSecuritySnapshot,
+        snapshot: &SignedSecuritySnapshot,
         _now_ms: u64,
     ) -> Result<PolicyDecision, Denial> {
         if self.allowed_os_image_hashes.is_empty()
-            || self
-                .allowed_compose_hashes
-                .as_ref()
-                .is_some_and(BTreeSet::is_empty)
+            || self.allowed_compose_hashes.is_empty()
             || self
                 .allowed_app_ids
                 .as_ref()
                 .is_some_and(BTreeSet::is_empty)
-            || self
-                .allowed_boot_measurements
-                .as_ref()
-                .is_some_and(BTreeSet::is_empty)
+            || self.allowed_boot_measurements.is_empty()
             || self
                 .allowed_vm_config_digests
                 .as_ref()
                 .is_some_and(BTreeSet::is_empty)
         {
             return Err(Denial::PolicyUnknown);
+        }
+        if !self.snapshot.matches(snapshot) {
+            return Err(Denial::SecurityEpochChanged);
         }
         for claim in claims {
             if claim.provider.contains("mock")
@@ -137,7 +172,9 @@ impl PolicyEvaluator for DstackBrc100IdentityPolicy {
         if !self
             .allowed_os_image_hashes
             .contains(text(parent, "os_image_hash")?)
-            || !allowed(&self.allowed_compose_hashes, text(parent, "compose_hash")?)
+            || !self
+                .allowed_compose_hashes
+                .contains(text(parent, "compose_hash")?)
             || !allowed(&self.allowed_app_ids, text(parent, "app_id")?)
             || !allowed(
                 &self.allowed_vm_config_digests,
@@ -146,16 +183,14 @@ impl PolicyEvaluator for DstackBrc100IdentityPolicy {
         {
             return Err(Denial::MeasurementMismatch);
         }
-        if let Some(boot) = &self.allowed_boot_measurements {
-            let live = BootMeasurements {
-                mrtd: text(parent, "mrtd")?.to_owned(),
-                rtmr0: text(parent, "rtmr0")?.to_owned(),
-                rtmr1: text(parent, "rtmr1")?.to_owned(),
-                rtmr2: text(parent, "rtmr2")?.to_owned(),
-            };
-            if !boot.contains(&live) {
-                return Err(Denial::MeasurementMismatch);
-            }
+        let live = BootMeasurements {
+            mrtd: text(parent, "mrtd")?.to_owned(),
+            rtmr0: text(parent, "rtmr0")?.to_owned(),
+            rtmr1: text(parent, "rtmr1")?.to_owned(),
+            rtmr2: text(parent, "rtmr2")?.to_owned(),
+        };
+        if !self.allowed_boot_measurements.contains(&live) {
+            return Err(Denial::MeasurementMismatch);
         }
         Ok(PolicyDecision {
             subject_binding: DSTACK_SUBJECT_KEY_BRC100_RELATION.to_owned(),

@@ -50,7 +50,6 @@ struct EvidenceResponse {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct KmsMeta {
     ca_cert: String,
     k256_pubkey: String,

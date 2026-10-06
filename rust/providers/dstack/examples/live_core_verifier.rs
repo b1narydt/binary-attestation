@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! cargo run -p binary-attestation-dstack --example live_core_verifier -- \
+//!   policy collateral.json kms-meta.json policy-pins.json policy-artifact.json
+//! cargo run -p binary-attestation-dstack --example live_core_verifier -- \
 //!   issue policy-artifact.json <compressed-subject-key> capture-dir
 //! curl -fsS -H 'content-type: application/json' \
 //!   --data-binary @capture-dir/challenge.json \
@@ -25,10 +27,16 @@ use binary_attestation_core::{
     ProviderRegistry, RelationRegistry, SecuritySnapshotBody, SignedSecuritySnapshot, U64Decimal,
     VerificationInput, jcs_bytes,
 };
-use binary_attestation_dstack::{DstackPolicyArtifactV1, DstackSnapshotPlugins};
+use binary_attestation_dstack::{
+    BootMeasurements, DcapRootV1, DstackPolicyArtifactV1, DstackSnapshotPlugins, PinnedCollateral,
+};
 use k256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use x509_cert::{
+    Certificate,
+    der::{DecodePem, Encode},
+};
 
 const CHALLENGE_TTL_MS: u64 = 180_000;
 const SNAPSHOT_TTL_MS: u64 = 15 * 60_000;
@@ -39,6 +47,29 @@ struct EvidenceResponse {
     public_key: String,
     binding_digest: String,
     bundle: binary_attestation_core::EvidenceBundle,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KmsMeta {
+    ca_cert: String,
+    k256_pubkey: String,
+    #[serde(flatten)]
+    _rest: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PolicyPins {
+    allowed_tcb_statuses: Vec<String>,
+    allowed_advisory_ids: Vec<String>,
+    allowed_os_image_hashes: Vec<String>,
+    allowed_compose_hashes: Vec<String>,
+    allowed_app_ids: Vec<String>,
+    mr_kms: Option<String>,
+    allowed_boot_measurements: Vec<BootMeasurements>,
+    #[serde(default)]
+    allowed_vm_config_digests: Vec<String>,
 }
 
 fn now_ms() -> anyhow::Result<u64> {
@@ -69,6 +100,45 @@ fn subject(value: String) -> AttestationSubject {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn build_policy(
+    collateral_path: &Path,
+    kms_meta_path: &Path,
+    pins_path: &Path,
+    output_path: &Path,
+) -> anyhow::Result<()> {
+    let collateral =
+        fs::read(collateral_path).with_context(|| format!("read {}", collateral_path.display()))?;
+    PinnedCollateral::from_json(&collateral).context("validate pinned collateral")?;
+    let kms: KmsMeta = read_json(kms_meta_path)?;
+    let pins: PolicyPins = read_json(pins_path)?;
+    let cert = Certificate::from_pem(kms.ca_cert.as_bytes()).context("parse KMS CA PEM")?;
+    let ca_spki_der = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .context("encode KMS CA SPKI")?;
+
+    let policy = DstackPolicyArtifactV1 {
+        profile: "dstack-attest-v0".into(),
+        dcap_root: DcapRootV1::IntelSgxRootCaProd,
+        collateral_json: vec![B64Url::from_bytes(&collateral)],
+        allowed_tcb_statuses: pins.allowed_tcb_statuses,
+        allowed_advisory_ids: pins.allowed_advisory_ids,
+        allowed_os_image_hashes: pins.allowed_os_image_hashes,
+        allowed_compose_hashes: pins.allowed_compose_hashes,
+        allowed_app_ids: pins.allowed_app_ids,
+        kms_ca_spki_der: B64Url::from_bytes(&ca_spki_der),
+        kms_k256_root: kms.k256_pubkey,
+        mr_kms: pins.mr_kms,
+        allowed_boot_measurements: pins.allowed_boot_measurements,
+        allowed_vm_config_digests: pins.allowed_vm_config_digests,
+    };
+    policy
+        .to_provider_artifact("dstack-attest-v0-policy")
+        .context("canonical provider artifact")?;
+    write_json(output_path, &policy)
 }
 
 fn issue(policy_path: &Path, subject_key: String, out_dir: &Path) -> anyhow::Result<()> {
@@ -207,6 +277,12 @@ fn verify(snapshot_path: &Path, challenge_path: &Path, response_path: &Path) -> 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, collateral, kms_meta, pins, output] if command == "policy" => build_policy(
+            Path::new(collateral),
+            Path::new(kms_meta),
+            Path::new(pins),
+            Path::new(output),
+        ),
         [command, policy, subject, out_dir] if command == "issue" => issue(
             Path::new(policy),
             subject.to_string_lossy().into_owned(),
@@ -218,7 +294,9 @@ fn main() -> anyhow::Result<()> {
             Path::new(response),
         ),
         _ => bail!(
-            "usage: live_core_verifier issue <policy.json> <subject-key> <out-dir> | \
+            "usage: live_core_verifier policy <collateral.json> <kms-meta.json> \
+             <pins.json> <output.json> | \
+             issue <policy.json> <subject-key> <out-dir> | \
              verify <snapshot.json> <challenge.json> <evidence-response.json>"
         ),
     }

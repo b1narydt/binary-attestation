@@ -1,0 +1,24 @@
+{
+  "capturedAt": "2026-10-06T05:46:00Z",
+  "probeImageSourceCommit": "0587759ef91228cef7d1a0c8e7cd597e19ae9a56",
+  "deploymentWorkflowCommit": "7bc628915051b2760f01fad7a9a8156c8d533648",
+  "image": "ghcr.io/b1narydt/bcap1-dstack-probe@sha256:3a73dffe4bd8d344ffa54d451f7889066ea3a504ddf8e60296520cc8b63603be",
+  "cvmId": "cvm_vKGLOyw8",
+  "vmUuid": "7dfb438e-6456-4784-b032-2dd060996d85",
+  "appId": "fb0130ad4d6f15107991a8551b6f7fe2aa78cce0",
+  "instanceId": "ca8331cb13fa7b9d6e116434b4b1358874be4556",
+  "composeHash": "a49aa45767fc6c6fc549dbf595dead3a22d882f531a3fc0c524171c5eb2787cf",
+  "node": {
+    "id": 18,
+    "name": "prod9",
+    "region": "US-WEST-1",
+    "version": "v0.6.0 (git:96583b6d6a5116c86be9)"
+  },
+  "os": {
+    "name": "dstack-0.5.9",
+    "isDev": false,
+    "osImageHash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033"
+  },
+  "endpoint": "https://fb0130ad4d6f15107991a8551b6f7fe2aa78cce0-8000.dstack-pha-prod9.phala.network",
+  "publicKey": "0397d769d881d17f39d72b4fcfd905118459e0f988368be49502a87192618fd5c4"
+}

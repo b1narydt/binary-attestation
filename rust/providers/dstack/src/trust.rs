@@ -40,8 +40,8 @@ impl KmsPins {
 pub struct DstackTrust {
     /// DER root CA for DCAP; `None` selects Intel's production SGX Root CA.
     pub root_ca_der: Option<Vec<u8>>,
-    /// Oldest Intel TCB-info issue time accepted from evidence-carried
-    /// collateral.
+    /// Oldest issue/update time accepted across the evidence-carried Intel
+    /// TCB info, QE identity, root CRL and PCK CRL.
     pub min_collateral_issued_ms: u64,
     /// Accepted DCAP TCB statuses (default `UpToDate`).
     pub allowed_tcb_statuses: BTreeSet<String>,

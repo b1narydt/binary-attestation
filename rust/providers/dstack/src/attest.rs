@@ -105,10 +105,9 @@ impl DstackAttestV0Verifier {
         if collateral.issued_at_ms() < self.trust.min_collateral_issued_ms {
             return Err(Denial::EndorsementsStale);
         }
-        // The embedded chain is unsigned and only selects collateral; the
-        // pinned chain is what DCAP verifies. Require the quote to carry the
-        // pinned leaf so evidence cannot name a platform certificate that was
-        // never pinned.
+        // DCAP verifies the quote chain to the policy-selected root. Require
+        // the quote to carry the collateral's leaf so evidence cannot name a
+        // different platform certificate.
         if let Some(pinned_leaf) = collateral.pck_leaf_der()? {
             let embedded = parsed.raw_cert_chain().map_err(|_| Denial::Malformed)?;
             let embedded_pem = std::str::from_utf8(embedded).map_err(|_| Denial::Malformed)?;

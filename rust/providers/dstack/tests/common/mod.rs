@@ -47,7 +47,9 @@ pub const FMSPC: &str = "20A06F000000";
 /// pinned collateral (PCK CRL 00:27:34Z, QE identity 00:44:03Z, root CRL 2027,
 /// PCK leaf 2033).
 pub const COLLATERAL_EARLIEST_EXPIRY_MS: u64 = 1_793_838_371_000;
-pub const COLLATERAL_ISSUED_MS: u64 = 1_791_246_371_000;
+/// Oldest statement issue time: the root CRL's 2026-02-26T13:04:00Z
+/// `thisUpdate`. Rollback floors cover every signed collateral document.
+pub const COLLATERAL_ISSUED_MS: u64 = 1_772_111_040_000;
 
 pub fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dstack-0.5.9-prod")

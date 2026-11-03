@@ -16,12 +16,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use binary_attestation_core::Denial;
 use dcap_qvl::QuoteCollateralV3;
 use der::Decode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use x509_cert::{Certificate, crl::CertificateList, time::Time};
 
 use crate::hex;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PinnedCollateralJson {
     pck_crl_issuer_chain: String,
@@ -52,6 +52,7 @@ struct Dated {
 pub struct PinnedCollateral {
     inner: QuoteCollateralV3,
     fmspc: String,
+    issued_at_ms: u64,
     not_before_ms: u64,
     not_after_ms: u64,
 }
@@ -60,6 +61,7 @@ impl core::fmt::Debug for PinnedCollateral {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PinnedCollateral")
             .field("fmspc", &self.fmspc)
+            .field("issued_at_ms", &self.issued_at_ms)
             .field("not_before_ms", &self.not_before_ms)
             .field("not_after_ms", &self.not_after_ms)
             .finish_non_exhaustive()
@@ -71,7 +73,7 @@ impl PinnedCollateral {
         let json: PinnedCollateralJson =
             serde_json::from_slice(bytes).map_err(|_| Denial::Malformed)?;
         let decode = |value: &str| hex::decode_any(value).ok_or(Denial::Malformed);
-        let inner = QuoteCollateralV3 {
+        Self::from_quote_collateral(QuoteCollateralV3 {
             pck_crl_issuer_chain: json.pck_crl_issuer_chain,
             root_ca_crl: decode(&json.root_ca_crl)?,
             pck_crl: decode(&json.pck_crl)?,
@@ -82,8 +84,10 @@ impl PinnedCollateral {
             qe_identity: json.qe_identity,
             qe_identity_signature: decode(&json.qe_identity_signature)?,
             pck_certificate_chain: json.pck_certificate_chain,
-        };
+        })
+    }
 
+    pub fn from_quote_collateral(inner: QuoteCollateralV3) -> Result<Self, Denial> {
         let tcb = dated(&inner.tcb_info, "tcbInfo")?;
         let qe = dated(&inner.qe_identity, "enclaveIdentity")?;
         let fmspc = tcb
@@ -92,8 +96,9 @@ impl PinnedCollateral {
             .filter(|value| value.len() == 12 && hex::decode_any(value).is_some())
             .ok_or(Denial::Malformed)?
             .to_ascii_uppercase();
+        let issued_at_ms = rfc3339_ms(&tcb.issue_date)?;
         let mut windows = vec![
-            (rfc3339_ms(&tcb.issue_date)?, rfc3339_ms(&tcb.next_update)?),
+            (issued_at_ms, rfc3339_ms(&tcb.next_update)?),
             (rfc3339_ms(&qe.issue_date)?, rfc3339_ms(&qe.next_update)?),
             crl_window(&inner.root_ca_crl)?,
             crl_window(&inner.pck_crl)?,
@@ -114,14 +119,36 @@ impl PinnedCollateral {
         Ok(Self {
             inner,
             fmspc,
+            issued_at_ms,
             not_before_ms,
             not_after_ms,
         })
     }
 
+    pub fn to_json(&self) -> Result<Vec<u8>, Denial> {
+        serde_json::to_vec(&PinnedCollateralJson {
+            pck_crl_issuer_chain: self.inner.pck_crl_issuer_chain.clone(),
+            root_ca_crl: hex::encode(&self.inner.root_ca_crl),
+            pck_crl: hex::encode(&self.inner.pck_crl),
+            tcb_info_issuer_chain: self.inner.tcb_info_issuer_chain.clone(),
+            tcb_info: self.inner.tcb_info.clone(),
+            tcb_info_signature: hex::encode(&self.inner.tcb_info_signature),
+            qe_identity_issuer_chain: self.inner.qe_identity_issuer_chain.clone(),
+            qe_identity: self.inner.qe_identity.clone(),
+            qe_identity_signature: hex::encode(&self.inner.qe_identity_signature),
+            pck_certificate_chain: self.inner.pck_certificate_chain.clone(),
+        })
+        .map_err(|_| Denial::Malformed)
+    }
+
     /// Uppercase-hex FMSPC this collateral is for.
     pub fn fmspc(&self) -> &str {
         &self.fmspc
+    }
+
+    /// Intel TCB-info `issueDate`, used by an Atlas-set rollback floor.
+    pub fn issued_at_ms(&self) -> u64 {
+        self.issued_at_ms
     }
 
     /// Latest `issueDate` / `thisUpdate` / `notBefore` across the documents.

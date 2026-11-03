@@ -12,7 +12,7 @@ default = []
 # In-TEE evidence producer: an async Unix-socket client for the dstack guest
 # agent. Off by default so verifier deployments never link tokio or touch
 # `/var/run/dstack.sock`.
-producer = ["dep:tokio", "dep:zeroize"]
+producer = ["dep:tokio", "dep:zeroize", "dcap-qvl/report"]
 
 [dependencies]
 anyhow.workspace = true

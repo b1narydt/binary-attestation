@@ -109,7 +109,8 @@ fn build_policy(
 ) -> anyhow::Result<()> {
     let collateral =
         fs::read(collateral_path).with_context(|| format!("read {}", collateral_path.display()))?;
-    PinnedCollateral::from_json(&collateral).context("validate pinned collateral")?;
+    let collateral =
+        PinnedCollateral::from_json(&collateral).context("validate pinned collateral")?;
     let kms: KmsMeta = read_json(kms_meta_path)?;
     let pins: PolicyPins = read_json(pins_path)?;
     let cert = Certificate::from_pem(kms.ca_cert.as_bytes()).context("parse KMS CA PEM")?;
@@ -122,7 +123,7 @@ fn build_policy(
     let policy = DstackPolicyArtifactV1 {
         profile: "dstack-attest-v0".into(),
         dcap_root: DcapRootV1::IntelSgxRootCaProd,
-        collateral_json: vec![B64Url::from_bytes(&collateral)],
+        min_collateral_issued_ms: U64Decimal::new(&collateral.issued_at_ms().to_string())?,
         allowed_tcb_statuses: pins.allowed_tcb_statuses,
         allowed_advisory_ids: pins.allowed_advisory_ids,
         allowed_os_image_hashes: pins.allowed_os_image_hashes,

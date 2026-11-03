@@ -398,7 +398,7 @@ fn core_verifier_refuses_the_live_challenge_without_a_snapshot_commitment() {
 }
 
 #[test]
-fn snapshot_bound_live_capture_is_allowed_by_the_real_core_verifier() {
+fn pre_collateral_evidence_snapshot_is_refused() {
     let snapshot: SignedSecuritySnapshot =
         serde_json::from_slice(&snapshot_capture_bytes("snapshot.json")).expect("snapshot");
     let challenge: Challenge =
@@ -414,49 +414,9 @@ fn snapshot_bound_live_capture_is_allowed_by_the_real_core_verifier() {
         hex_encode(&challenge.binding_digest().expect("binding digest"))
     );
 
-    let plugins = DstackSnapshotPlugins::from_snapshot(&snapshot).expect("snapshot plugins");
-    let providers = Arc::new(ProviderRegistry::new());
-    providers
-        .register(Arc::new(plugins.parent))
-        .expect("parent");
-    providers.register(Arc::new(plugins.child)).expect("child");
-    let relations = Arc::new(RelationRegistry::new());
-    relations
-        .register(Arc::new(plugins.relation))
-        .expect("relation");
-    let now_ms = challenge.issued_at_ms.get() + 1_000;
-    let clock = Arc::new(FrozenClock(now_ms));
-    let snapshots = Arc::new(InMemorySnapshotStore::with_clock(clock.clone()));
-    snapshots.publish(snapshot).expect("publish snapshot");
-    let challenges = Arc::new(ChallengeStore::new(4, 10));
-    challenges
-        .issue(challenge.clone(), now_ms)
-        .expect("issue challenge");
-    let core = CoreVerifier::with_clock(
-        challenges,
-        snapshots,
-        providers,
-        relations,
-        Arc::new(plugins.policy),
-        clock,
-    );
-    let claims = core
-        .verify(VerificationInput {
-            authenticated_subject: &challenge.subject,
-            bundle: &response.bundle,
-            transport_context_digest: &challenge.context_digest,
-        })
-        .expect("snapshot-bound live capture allowed");
-    let parent = claims
-        .components
-        .iter()
-        .find(|component| component.component_id == PARENT_ID)
-        .expect("parent claims");
-    assert_eq!(claims.subject_binding, DSTACK_SUBJECT_KEY_BRC100_RELATION);
-    assert_eq!(parent.measurements["app_id"], APP_ID_20261006);
-    assert_eq!(parent.measurements["compose_hash"], COMPOSE_HASH_20261006);
-    assert_eq!(
-        parent.measurements["vm_config_sha256"],
-        VM_CONFIG_SHA256_20261006
-    );
+    assert!(matches!(
+        DstackSnapshotPlugins::from_snapshot(&snapshot),
+        Err(Denial::Malformed)
+    ));
+    assert!(response.bundle.components[0].endorsements.is_none());
 }

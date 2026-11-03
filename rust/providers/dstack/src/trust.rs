@@ -7,8 +7,6 @@ use der::Decode;
 use k256::PublicKey;
 use x509_cert::spki::SubjectPublicKeyInfoOwned;
 
-use crate::PinnedCollateral;
-
 /// Spec §11 "KMS anchor": the pair `(kms_ca_spki, kms_k256_root)` plus an
 /// optional `mr-kms` pin. Neither root is ever taken from evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,9 +40,9 @@ impl KmsPins {
 pub struct DstackTrust {
     /// DER root CA for DCAP; `None` selects Intel's production SGX Root CA.
     pub root_ca_der: Option<Vec<u8>>,
-    /// Pinned collateral, one entry per FMSPC. A quote whose FMSPC has no
-    /// entry is refused (`endorsements_missing`).
-    pub collateral: Vec<PinnedCollateral>,
+    /// Oldest Intel TCB-info issue time accepted from evidence-carried
+    /// collateral.
+    pub min_collateral_issued_ms: u64,
     /// Accepted DCAP TCB statuses (default `UpToDate`).
     pub allowed_tcb_statuses: BTreeSet<String>,
     /// Accepted Intel advisory identifiers. An empty set accepts only reports
@@ -63,7 +61,7 @@ impl DstackTrust {
     pub fn new(kms: KmsPins) -> Self {
         Self {
             root_ca_der: None,
-            collateral: Vec::new(),
+            min_collateral_issued_ms: 0,
             allowed_tcb_statuses: BTreeSet::from(["UpToDate".into()]),
             allowed_advisory_ids: BTreeSet::new(),
             allowed_os_image_hashes: BTreeSet::new(),
@@ -75,8 +73,7 @@ impl DstackTrust {
 
     pub(crate) fn validate(&self) -> Result<(), Denial> {
         self.kms.validate()?;
-        if self.collateral.is_empty()
-            || self.allowed_tcb_statuses.is_empty()
+        if self.allowed_tcb_statuses.is_empty()
             || self.allowed_os_image_hashes.is_empty()
             || self.allowed_compose_hashes.is_empty()
             || self
@@ -86,12 +83,6 @@ impl DstackTrust {
             || self.root_ca_der.as_ref().is_some_and(Vec::is_empty)
         {
             return Err(Denial::VerifierUnavailable);
-        }
-        let mut fmspcs = BTreeSet::new();
-        for collateral in &self.collateral {
-            if !fmspcs.insert(collateral.fmspc().to_owned()) {
-                return Err(Denial::VerifierUnavailable);
-            }
         }
         Ok(())
     }

@@ -16,14 +16,15 @@
 //!
 //! # Verification order of the parent (fail-cheap, fail-closed)
 //!
-//! 1. component shape: provider/media type, no endorsements, evidence bound;
+//! 1. component shape: provider/media type and evidence bound;
 //! 2. bounded SCALE V0 decode ([`scale`]), version/variant checks, no trailing
 //!    bytes;
 //! 3. structural launch checks: the `imr == 3` `TdxEvent`s and the
 //!    `RuntimeEvent` list must agree exactly; the pinned 0.5.9 launch order
 //!    must match exactly ([`events`]);
 //! 4. envelope `report_data == expected_binding` (constant time);
-//! 5. FMSPC selection of pinned collateral, collateral window, DCAP quote
+//! 5. FMSPC match of evidence-carried collateral, policy issue-time floor,
+//!    collateral window, DCAP quote
 //!    verification (`dcap-qvl`, Intel production root by default);
 //! 6. authenticated `report_data == expected_binding` (constant time), TCB
 //!    allowlist;
@@ -42,8 +43,9 @@
 //!
 //! Production core verifiers should construct the parent, child, relation and
 //! policy together with [`DstackSnapshotPlugins::from_snapshot`]. Its canonical
-//! provider artifact commits collateral, roots, TCB/advisory posture and the
-//! complete workload/boot allowlists to the challenge's `trustDigest`.
+//! provider artifact commits the collateral issue-time floor, roots,
+//! TCB/advisory posture and the complete workload/boot allowlists to the
+//! challenge's `trustDigest`.
 
 #![forbid(unsafe_code)]
 

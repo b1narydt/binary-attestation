@@ -2,10 +2,11 @@
 //!
 //! `GET /identity` returns only the app-bound compressed BRC-100 public key.
 //! `POST /evidence` accepts one canonical BCAP1 challenge and returns the
-//! matching evidence bundle. Private key bytes never leave the guest agent or
+//! matching evidence bundle with Intel collateral from
+//! `DSTACK_COLLATERAL_PATH`. Private key bytes never leave the guest agent or
 //! this process and are never included in errors, responses, or logs.
 
-use std::{io, sync::Arc};
+use std::{fs, io, sync::Arc};
 
 use binary_attestation_core::{Challenge, EvidenceBundle};
 use binary_attestation_dstack::producer::DstackAttestV0Producer;
@@ -33,20 +34,32 @@ struct EvidenceResponse {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let collateral_path = std::env::var("DSTACK_COLLATERAL_PATH").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "DSTACK_COLLATERAL_PATH is required",
+        )
+    })?;
+    let collateral = Arc::new(fs::read(collateral_path)?);
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     let producer = Arc::new(DstackAttestV0Producer::default());
     loop {
         let (stream, _) = listener.accept().await?;
         let producer = Arc::clone(&producer);
+        let collateral = Arc::clone(&collateral);
         tokio::spawn(async move {
-            if let Err(error) = serve(stream, producer).await {
+            if let Err(error) = serve(stream, producer, collateral).await {
                 eprintln!("live probe request failed: {error}");
             }
         });
     }
 }
 
-async fn serve(mut stream: TcpStream, producer: Arc<DstackAttestV0Producer>) -> Result<(), String> {
+async fn serve(
+    mut stream: TcpStream,
+    producer: Arc<DstackAttestV0Producer>,
+    collateral: Arc<Vec<u8>>,
+) -> Result<(), String> {
     let request = read_request(&mut stream).await?;
     let (status, response) = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => (200, serde_json::json!({"ok": true})),
@@ -58,13 +71,15 @@ async fn serve(mut stream: TcpStream, producer: Arc<DstackAttestV0Producer>) -> 
             ),
             Err(error) => (503, serde_json::json!({"error": error.to_string()})),
         },
-        ("POST", "/evidence") => match produce_evidence(&producer, &request.body).await {
-            Ok(response) => (
-                200,
-                serde_json::to_value(response).map_err(|error| error.to_string())?,
-            ),
-            Err(error) => (400, serde_json::json!({"error": error})),
-        },
+        ("POST", "/evidence") => {
+            match produce_evidence(&producer, &collateral, &request.body).await {
+                Ok(response) => (
+                    200,
+                    serde_json::to_value(response).map_err(|error| error.to_string())?,
+                ),
+                Err(error) => (400, serde_json::json!({"error": error})),
+            }
+        }
         _ => (404, serde_json::json!({"error": "not found"})),
     };
     write_response(&mut stream, status, &response).await
@@ -72,6 +87,7 @@ async fn serve(mut stream: TcpStream, producer: Arc<DstackAttestV0Producer>) -> 
 
 async fn produce_evidence(
     producer: &DstackAttestV0Producer,
+    collateral: &[u8],
     body: &[u8],
 ) -> Result<EvidenceResponse, String> {
     let challenge: Challenge =
@@ -83,7 +99,7 @@ async fn produce_evidence(
         .binding_digest()
         .map_err(|denial| format!("challenge binding: {denial}"))?;
     let evidence = producer
-        .produce(binding)
+        .produce(binding, collateral)
         .await
         .map_err(|error| error.to_string())?;
     if challenge.subject.kind != "brc100-public-key"

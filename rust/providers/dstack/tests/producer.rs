@@ -179,7 +179,7 @@ async fn producer_assembles_a_verifiable_pair_and_never_emits_the_private_key() 
     .spawn();
 
     let produced = DstackAttestV0Producer::new(&socket)
-        .produce(probe.binding)
+        .produce(probe.binding, &fixture_bytes("collateral.json"))
         .await
         .expect("produce");
     let seen = agent.await.expect("agent task");
@@ -251,7 +251,7 @@ async fn producer_fails_closed_without_the_guest_agent_socket() {
     let probe = probe_did();
     let missing = socket_path("missing");
     let error = DstackAttestV0Producer::new(&missing)
-        .produce(probe.binding)
+        .produce(probe.binding, &fixture_bytes("collateral.json"))
         .await
         .expect_err("no socket");
     assert!(matches!(error, ProduceError::SocketUnavailable { .. }));
@@ -271,7 +271,7 @@ async fn producer_refuses_an_attestation_whose_report_data_is_not_the_binding() 
     }
     .spawn();
     let error = DstackAttestV0Producer::new(&socket)
-        .produce(did.binding)
+        .produce(did.binding, &fixture_bytes("collateral.json"))
         .await
         .expect_err("report_data mismatch");
     assert!(matches!(error, ProduceError::Agent(_)), "{error}");
@@ -291,7 +291,7 @@ async fn producer_times_out_when_the_guest_agent_stalls() {
 
     let error = DstackAttestV0Producer::new(&socket)
         .with_timeout(Duration::from_millis(20))
-        .produce(probe.binding)
+        .produce(probe.binding, &fixture_bytes("collateral.json"))
         .await
         .expect_err("stalled agent must time out");
     assert!(

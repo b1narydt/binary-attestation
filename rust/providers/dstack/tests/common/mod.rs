@@ -9,7 +9,7 @@ use std::{fs, path::PathBuf};
 
 use binary_attestation_core::{
     B64Url, Challenge, Clock, Denial, EvidenceBindingEdge, EvidenceComponent,
-    SignedSecuritySnapshot, jcs_bytes,
+    SignedSecuritySnapshot, U64Decimal, jcs_bytes,
 };
 use binary_attestation_dstack::{
     BootMeasurements, DSTACK_ATTEST_V0_MEDIA_TYPE, DSTACK_ATTEST_V0_PROVIDER,
@@ -47,6 +47,7 @@ pub const FMSPC: &str = "20A06F000000";
 /// pinned collateral (PCK CRL 00:27:34Z, QE identity 00:44:03Z, root CRL 2027,
 /// PCK leaf 2033).
 pub const COLLATERAL_EARLIEST_EXPIRY_MS: u64 = 1_793_838_371_000;
+pub const COLLATERAL_ISSUED_MS: u64 = 1_791_246_371_000;
 
 pub fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dstack-0.5.9-prod")
@@ -191,7 +192,7 @@ pub fn collateral() -> PinnedCollateral {
 
 pub fn trust() -> DstackTrust {
     let mut trust = DstackTrust::new(kms_pins());
-    trust.collateral.push(collateral());
+    trust.min_collateral_issued_ms = COLLATERAL_ISSUED_MS;
     trust
         .allowed_os_image_hashes
         .insert(hex_decode(PROD_OS_IMAGE_HASH).try_into().expect("32"));
@@ -247,7 +248,8 @@ pub fn policy_artifact() -> DstackPolicyArtifactV1 {
     DstackPolicyArtifactV1 {
         profile: DSTACK_ATTEST_V0_PROVIDER.into(),
         dcap_root: DcapRootV1::IntelSgxRootCaProd,
-        collateral_json: vec![B64Url::from_bytes(&fixture_bytes("collateral.json"))],
+        min_collateral_issued_ms: U64Decimal::new(&COLLATERAL_ISSUED_MS.to_string())
+            .expect("collateral floor"),
         allowed_tcb_statuses: vec!["UpToDate".into()],
         allowed_advisory_ids: vec![],
         allowed_os_image_hashes: vec![PROD_OS_IMAGE_HASH.into()],
@@ -302,7 +304,7 @@ pub fn parent_component_from(envelope: &[u8]) -> EvidenceComponent {
         provider: DSTACK_ATTEST_V0_PROVIDER.into(),
         media_type: DSTACK_ATTEST_V0_MEDIA_TYPE.into(),
         evidence: B64Url::from_bytes(envelope),
-        endorsements: None,
+        endorsements: Some(B64Url::from_bytes(&fixture_bytes("collateral.json"))),
         untrusted_metadata: None,
     }
 }

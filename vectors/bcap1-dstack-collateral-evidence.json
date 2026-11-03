@@ -1,0 +1,26 @@
+{
+  "format": "bcap1-dstack-collateral-evidence-v1",
+  "collateralFixture": "rust/providers/dstack/tests/fixtures/dstack-0.5.9-prod/collateral.json",
+  "collateralSha256": "d793bd575d78657b06b14958f4b77267cd3c927456be04b733609c3dbdd5a9ee",
+  "policyArtifact": {
+    "profile": "dstack-attest-v0",
+    "minCollateralIssuedMs": "1791246371000"
+  },
+  "evidenceComponent": {
+    "provider": "dstack-attest-v0",
+    "mediaType": "application/vnd.dstack.attestation.scale-v0",
+    "collateralField": "endorsements"
+  },
+  "expected": {
+    "fmspc": "20A06F000000",
+    "tcbInfoIssuedMs": "1791246371000",
+    "tcbInfoNextUpdateMs": "1793838371000"
+  },
+  "rejections": [
+    "missing endorsements",
+    "collateral FMSPC differs from quote FMSPC",
+    "collateral is outside its validity window",
+    "TCB-info issueDate is below minCollateralIssuedMs",
+    "Intel chain does not reach the pinned root"
+  ]
+}

@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use binary_attestation_core::{
-    B64Url, Denial, EvidenceComponent, EvidenceVerifier, MAX_COMPONENT_EVIDENCE, U64Decimal,
-    VerifiedComponent, constant_time_eq,
+    B64Url, Denial, EvidenceComponent, EvidenceVerifier, MAX_COMPONENT_ENDORSEMENTS,
+    MAX_COMPONENT_EVIDENCE, U64Decimal, VerifiedComponent, constant_time_eq,
 };
 use dcap_qvl::verify::QuoteVerifier;
 use serde::Deserialize;
@@ -65,7 +65,6 @@ impl DstackAttestV0Verifier {
         // 1. Component shape.
         if component.provider != DSTACK_ATTEST_V0_PROVIDER
             || component.media_type != DSTACK_ATTEST_V0_MEDIA_TYPE
-            || component.endorsements.is_some()
         {
             return Err(Denial::Malformed);
         }
@@ -88,18 +87,24 @@ impl DstackAttestV0Verifier {
             return Err(Denial::BindingMismatch);
         }
 
-        // 5. Collateral selection and DCAP.
+        // 5. Evidence-carried collateral and DCAP.
         let parsed =
             dcap_qvl::quote::Quote::parse(&envelope.quote).map_err(|_| Denial::Malformed)?;
         let fmspc =
             hex::encode(&dcap_qvl::intel::quote_fmspc(&parsed).map_err(|_| Denial::Malformed)?)
                 .to_ascii_uppercase();
-        let collateral = self
-            .trust
-            .collateral
-            .iter()
-            .find(|collateral| collateral.fmspc() == fmspc)
-            .ok_or(Denial::EndorsementsMissing)?;
+        let collateral_bytes = component
+            .endorsements
+            .as_ref()
+            .ok_or(Denial::EndorsementsMissing)?
+            .decode_with_limit(MAX_COMPONENT_ENDORSEMENTS)?;
+        let collateral = crate::PinnedCollateral::from_json(&collateral_bytes)?;
+        if collateral.fmspc() != fmspc {
+            return Err(Denial::EndorsementsMissing);
+        }
+        if collateral.issued_at_ms() < self.trust.min_collateral_issued_ms {
+            return Err(Denial::EndorsementsStale);
+        }
         // The embedded chain is unsigned and only selects collateral; the
         // pinned chain is what DCAP verifies. Require the quote to carry the
         // pinned leaf so evidence cannot name a platform certificate that was

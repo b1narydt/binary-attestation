@@ -12,7 +12,9 @@ use std::{
     time::Duration,
 };
 
-use binary_attestation_core::{B64Url, EvidenceBindingEdge, EvidenceComponent};
+use binary_attestation_core::{
+    B64Url, EvidenceBindingEdge, EvidenceComponent, MAX_COMPONENT_ENDORSEMENTS,
+};
 use k256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use serde::Deserialize;
 use tokio::{
@@ -54,6 +56,8 @@ pub enum ProduceError {
     Agent(String),
     #[error("assembling evidence: {0}")]
     Internal(String),
+    #[error("Intel collateral unavailable")]
+    CollateralUnavailable,
 }
 
 /// The two components and the edge a relying party needs, plus the attested
@@ -77,6 +81,7 @@ struct GetKeyResponse {
     signature_chain: Vec<String>,
 }
 
+#[derive(Clone)]
 pub struct DstackAttestV0Producer {
     socket_path: PathBuf,
     timeout: Duration,
@@ -120,15 +125,16 @@ impl DstackAttestV0Producer {
     pub async fn produce(
         &self,
         binding_digest: [u8; 64],
+        collateral_json: &[u8],
     ) -> Result<ProducedEvidence, ProduceError> {
-        let attest: AttestResponse = self
-            .post_json(
-                "/Attest",
-                &serde_json::json!({ "report_data": hex::encode(&binding_digest) }),
-            )
-            .await?;
-        let envelope = hex::decode_any(&attest.attestation)
-            .ok_or_else(|| ProduceError::Agent("/Attest attestation is not hex".into()))?;
+        if collateral_json.len() > MAX_COMPONENT_ENDORSEMENTS {
+            return Err(ProduceError::Internal(
+                "Intel collateral exceeds the BCAP endorsement limit".into(),
+            ));
+        }
+        crate::PinnedCollateral::from_json(collateral_json)
+            .map_err(|denial| ProduceError::Internal(format!("Intel collateral: {denial}")))?;
+        let envelope = self.attest(binding_digest).await?;
         let decoded = LegacyAttestationV0::decode(&envelope)
             .map_err(|denial| ProduceError::Agent(format!("/Attest envelope: {denial}")))?;
         if decoded.report_data != binding_digest {
@@ -164,7 +170,7 @@ impl DstackAttestV0Producer {
                 provider: DSTACK_ATTEST_V0_PROVIDER.into(),
                 media_type: DSTACK_ATTEST_V0_MEDIA_TYPE.into(),
                 evidence: B64Url::from_bytes(&envelope),
-                endorsements: None,
+                endorsements: Some(B64Url::from_bytes(collateral_json)),
                 untrusted_metadata: None,
             },
             child: EvidenceComponent {
@@ -183,6 +189,23 @@ impl DstackAttestV0Producer {
             },
             public_key,
         })
+    }
+
+    async fn attest(&self, binding_digest: [u8; 64]) -> Result<Vec<u8>, ProduceError> {
+        let attest: AttestResponse = self
+            .post_json(
+                "/Attest",
+                &serde_json::json!({ "report_data": hex::encode(&binding_digest) }),
+            )
+            .await?;
+        hex::decode_any(&attest.attestation)
+            .ok_or_else(|| ProduceError::Agent("/Attest attestation is not hex".into()))
+    }
+
+    async fn collateral_quote(&self) -> Result<Vec<u8>, ProduceError> {
+        let envelope = LegacyAttestationV0::decode(&self.attest([0; 64]).await?)
+            .map_err(|denial| ProduceError::Agent(format!("/Attest envelope: {denial}")))?;
+        Ok(envelope.quote)
     }
 
     async fn identity_material(&self) -> Result<(SigningKey, Vec<B64Url>), ProduceError> {
@@ -280,6 +303,30 @@ impl DstackAttestV0Producer {
         }
         serde_json::from_slice(&body)
             .map_err(|_| ProduceError::Agent(format!("{endpoint} returned an unexpected body")))
+    }
+}
+
+pub struct DstackCollateralFetcher {
+    client: dcap_qvl::collateral::CollateralClient,
+}
+
+impl DstackCollateralFetcher {
+    pub fn new(pccs_url: impl Into<String>) -> Result<Self, ProduceError> {
+        let client = dcap_qvl::collateral::CollateralClient::with_default_http(pccs_url)
+            .map_err(|_| ProduceError::CollateralUnavailable)?;
+        Ok(Self { client })
+    }
+
+    pub async fn fetch(&self, producer: &DstackAttestV0Producer) -> Result<Vec<u8>, ProduceError> {
+        let quote = producer.collateral_quote().await?;
+        let collateral = self
+            .client
+            .fetch(&quote)
+            .await
+            .map_err(|_| ProduceError::CollateralUnavailable)?;
+        crate::PinnedCollateral::from_quote_collateral(collateral)
+            .and_then(|collateral| collateral.to_json())
+            .map_err(|_| ProduceError::CollateralUnavailable)
     }
 }
 

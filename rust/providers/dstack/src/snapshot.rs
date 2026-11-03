@@ -4,7 +4,8 @@
 use std::collections::BTreeSet;
 
 use binary_attestation_core::{
-    B64Url, Denial, MAX_BUNDLE_BYTES, ProviderPolicyArtifact, SignedSecuritySnapshot, jcs_bytes,
+    B64Url, Denial, MAX_BUNDLE_BYTES, ProviderPolicyArtifact, SignedSecuritySnapshot, U64Decimal,
+    jcs_bytes,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     BootMeasurements, DSTACK_ATTEST_V0_PROVIDER, DstackAttestV0Verifier,
     DstackBrc100IdentityPolicy, DstackSubjectKeyBrc100Relation, DstackSubjectKeyV0Verifier,
-    DstackTrust, KmsPins, PinnedCollateral, hex,
+    DstackTrust, KmsPins, hex,
 };
 
 pub const DSTACK_POLICY_ARTIFACT_MEDIA_TYPE: &str =
@@ -29,15 +30,14 @@ pub enum DcapRootV1 {
 }
 
 /// Complete provider trust and MPC identity policy committed by one snapshot
-/// artifact. Required arrays are fail-closed: empty collateral, TCB statuses,
-/// OS images, compose hashes or boot tuples make plugin construction fail.
+/// artifact. Required arrays are fail-closed: empty TCB statuses, OS images,
+/// compose hashes or boot tuples make plugin construction fail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DstackPolicyArtifactV1 {
     pub profile: String,
     pub dcap_root: DcapRootV1,
-    /// Exact JSON bytes accepted by [`PinnedCollateral::from_json`].
-    pub collateral_json: Vec<B64Url>,
+    pub min_collateral_issued_ms: U64Decimal,
     pub allowed_tcb_statuses: Vec<String>,
     /// Empty means that the verified report must carry no advisory IDs.
     pub allowed_advisory_ids: Vec<String>,
@@ -118,7 +118,7 @@ impl DstackSnapshotPlugins {
             DcapRootV1::IntelSgxRootCaProd => None,
             DcapRootV1::CustomDer { der } => Some(der.decode_with_limit(4096)?),
         };
-        trust.collateral = unique_collateral(&artifact.collateral_json)?;
+        trust.min_collateral_issued_ms = artifact.min_collateral_issued_ms.get();
         trust.allowed_tcb_statuses = unique_text(&artifact.allowed_tcb_statuses, false)?;
         trust.allowed_advisory_ids = unique_text(&artifact.allowed_advisory_ids, true)?;
         trust.allowed_os_image_hashes = unique_hex::<32>(&artifact.allowed_os_image_hashes, false)?;
@@ -222,21 +222,4 @@ fn unique_boot(values: &[BootMeasurements]) -> Result<BTreeSet<BootMeasurements>
         return Err(Denial::Malformed);
     }
     Ok(set)
-}
-
-fn unique_collateral(values: &[B64Url]) -> Result<Vec<PinnedCollateral>, Denial> {
-    if values.is_empty() {
-        return Err(Denial::VerifierUnavailable);
-    }
-    let mut digests = BTreeSet::new();
-    let mut collateral = Vec::with_capacity(values.len());
-    for value in values {
-        let bytes = value.decode_with_limit(MAX_BUNDLE_BYTES)?;
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        if !digests.insert(digest) {
-            return Err(Denial::Malformed);
-        }
-        collateral.push(PinnedCollateral::from_json(&bytes)?);
-    }
-    Ok(collateral)
 }

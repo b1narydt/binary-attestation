@@ -33,6 +33,35 @@ async function readJson(directory, name) {
   }
 }
 
+async function verifyDstackCollateralEvidenceVector() {
+  const vector = await readJson(vectorsDir, 'bcap1-dstack-collateral-evidence.json');
+  equal(vector.format, 'bcap1-dstack-collateral-evidence-v1', 'collateral vector format');
+  equal(vector.evidenceComponent.provider, 'dstack-attest-v0', 'collateral provider');
+  equal(
+    vector.evidenceComponent.mediaType,
+    'application/vnd.dstack.attestation.scale-v0',
+    'collateral media type',
+  );
+  equal(vector.evidenceComponent.collateralField, 'endorsements', 'collateral wire field');
+  if (Object.hasOwn(vector.policyArtifact, 'collateralJson')) {
+    fail('collateralJson must not appear in the dstack policy artifact');
+  }
+  const floor = u64(vector.policyArtifact.minCollateralIssuedMs, 'minCollateralIssuedMs');
+  const collateralBytes = await readFile(resolve(root, vector.collateralFixture));
+  equal(hash('sha256', collateralBytes).toString('hex'), vector.collateralSha256, 'collateral SHA-256');
+  const collateral = JSON.parse(collateralBytes);
+  const tcbInfo = JSON.parse(collateral.tcb_info);
+  equal(tcbInfo.fmspc, vector.expected.fmspc, 'collateral FMSPC');
+  const issuedMs = BigInt(Date.parse(tcbInfo.issueDate));
+  const nextUpdateMs = BigInt(Date.parse(tcbInfo.nextUpdate));
+  equal(issuedMs.toString(), vector.expected.tcbInfoIssuedMs, 'TCB-info issue time');
+  equal(nextUpdateMs.toString(), vector.expected.tcbInfoNextUpdateMs, 'TCB-info next update');
+  if (issuedMs < floor) fail('collateral fixture is older than its policy floor');
+  if (!Array.isArray(vector.rejections) || vector.rejections.length !== 5) {
+    fail('collateral rejection contract differs from its checked-in value');
+  }
+}
+
 function hash(algorithm, bytes) {
   return createHash(algorithm).update(bytes).digest();
 }
@@ -576,6 +605,7 @@ async function main() {
   verifyTransport(transport);
   verifySnapshot(snapshot);
   verifyGpuPolicy(gpuPolicy);
+  await verifyDstackCollateralEvidenceVector();
   verifyCoreRejections(coreRejections);
   verifyGraphRejections(await readJson(vectorsDir, 'bcap1-graph-rejections.json'));
   verifyBundlePrecedence(await readJson(vectorsDir, 'bcap1-bundle-precedence.json'));

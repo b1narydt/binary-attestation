@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use binary_attestation_core::{B64Url, Denial, EvidenceVerifier, VerifiedComponent};
 use binary_attestation_dstack::{
-    DSTACK_ATTEST_V0_PROVIDER, DstackAttestV0Verifier, DstackTrust, PinnedCollateral,
+    DSTACK_ATTEST_V0_PROVIDER, DstackAttestV0Verifier, DstackTrust,
     events::{LAUNCH_EVENT_ORDER, replay_rtmr3, runtime_event_digest},
     scale::{LegacyAttestationV0, RuntimeEvent, TdxEvent},
 };
@@ -558,11 +558,12 @@ fn collateral_missing_for_the_quote_fmspc_is_endorsements_missing() {
     let other_platform = String::from_utf8(fixture_bytes("collateral.json"))
         .expect("utf8")
         .replace(FMSPC, "00A06F000000");
-    let mut trust = trust();
-    trust.collateral = vec![PinnedCollateral::from_json(other_platform.as_bytes()).expect("pin")];
-    let verifier = DstackAttestV0Verifier::new(trust).expect("verifier");
+    let mut component = parent_component(&probe);
+    component.endorsements = Some(B64Url::from_bytes(other_platform.as_bytes()));
     assert_eq!(
-        verify(&verifier, &probe).err(),
+        attest_verifier()
+            .verify(&component, probe.binding, probe.now_ms())
+            .err(),
         Some(Denial::EndorsementsMissing)
     );
 }
@@ -586,6 +587,18 @@ fn stale_collateral_is_endorsements_stale() {
         verifier
             .verify(&parent_component(&probe), probe.binding, 1_000)
             .err(),
+        Some(Denial::EndorsementsStale)
+    );
+}
+
+#[test]
+fn collateral_issue_time_floor_is_enforced() {
+    let probe = probe_did();
+    let mut trust = trust();
+    trust.min_collateral_issued_ms = COLLATERAL_ISSUED_MS + 1;
+    let verifier = DstackAttestV0Verifier::new(trust).expect("verifier");
+    assert_eq!(
+        verify(&verifier, &probe).err(),
         Some(Denial::EndorsementsStale)
     );
 }
@@ -642,12 +655,6 @@ fn compose_hash_and_app_id_allowlists_are_enforced() {
 
 #[test]
 fn verifier_construction_refuses_incomplete_trust() {
-    let mut trust = trust();
-    trust.collateral.clear();
-    assert!(matches!(
-        DstackAttestV0Verifier::new(trust),
-        Err(Denial::VerifierUnavailable)
-    ));
     let mut trust = common::trust();
     trust.allowed_os_image_hashes.clear();
     assert!(matches!(
@@ -678,7 +685,7 @@ fn verifier_construction_refuses_incomplete_trust() {
         DstackAttestV0Verifier::new(trust),
         Err(Denial::VerifierUnavailable)
     ));
-    assert!(matches!(DstackTrust::new(kms_pins()).collateral.len(), 0));
+    assert_eq!(DstackTrust::new(kms_pins()).min_collateral_issued_ms, 0);
 }
 
 #[test]
@@ -703,9 +710,16 @@ fn wrong_media_type_or_provider_name_is_malformed() {
 }
 
 #[test]
-fn unexpected_endorsements_are_malformed() {
+fn missing_or_malformed_endorsements_are_refused() {
     let probe = probe_did();
     let mut component = parent_component(&probe);
+    component.endorsements = None;
+    assert_eq!(
+        attest_verifier()
+            .verify(&component, probe.binding, probe.now_ms())
+            .err(),
+        Some(Denial::EndorsementsMissing)
+    );
     component.endorsements = Some(B64Url::from_bytes(b"{}"));
     assert_eq!(
         attest_verifier()

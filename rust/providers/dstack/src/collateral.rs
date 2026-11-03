@@ -96,17 +96,15 @@ impl PinnedCollateral {
             .filter(|value| value.len() == 12 && hex::decode_any(value).is_some())
             .ok_or(Denial::Malformed)?
             .to_ascii_uppercase();
-        let mut windows = vec![
-            (rfc3339_ms(&tcb.issue_date)?, rfc3339_ms(&tcb.next_update)?),
-            (rfc3339_ms(&qe.issue_date)?, rfc3339_ms(&qe.next_update)?),
-            crl_window(&inner.root_ca_crl)?,
-            crl_window(&inner.pck_crl)?,
-        ];
-        let issued_at_ms = windows
-            .iter()
-            .map(|window| window.0)
+        let tcb_window = (rfc3339_ms(&tcb.issue_date)?, rfc3339_ms(&tcb.next_update)?);
+        let qe_window = (rfc3339_ms(&qe.issue_date)?, rfc3339_ms(&qe.next_update)?);
+        let root_crl_window = crl_window(&inner.root_ca_crl)?;
+        let pck_crl_window = crl_window(&inner.pck_crl)?;
+        let issued_at_ms = [tcb_window.0, qe_window.0, pck_crl_window.0]
+            .into_iter()
             .min()
             .ok_or(Denial::Malformed)?;
+        let mut windows = vec![tcb_window, qe_window, root_crl_window, pck_crl_window];
         if let Some(chain) = &inner.pck_certificate_chain {
             let leaf = Certificate::from_der(&first_pem_certificate(chain)?)
                 .map_err(|_| Denial::Malformed)?;
@@ -150,8 +148,9 @@ impl PinnedCollateral {
         &self.fmspc
     }
 
-    /// Oldest TCB/QE issue date or CRL this-update time, used by the
-    /// Atlas-set rollback floor.
+    /// Oldest TCB info or QE identity issue date or PCK CRL this-update time,
+    /// used by the Atlas-set rollback floor. The long-lived root CRL does not
+    /// set this freshness floor.
     pub fn issued_at_ms(&self) -> u64 {
         self.issued_at_ms
     }

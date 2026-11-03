@@ -604,6 +604,15 @@ fn collateral_issue_time_floor_is_enforced() {
 }
 
 #[test]
+fn captured_collateral_floor_excludes_the_annual_root_crl() {
+    let probe = probe_did();
+    let mut trust = trust();
+    trust.min_collateral_issued_ms = COLLATERAL_ISSUED_MS;
+    let verifier = DstackAttestV0Verifier::new(trust).expect("verifier");
+    verify(&verifier, &probe).expect("captured collateral passes its real freshness floor");
+}
+
+#[test]
 fn wrong_kms_ca_spki_pin_is_root_untrusted() {
     let probe = probe_did();
     let mut trust = trust();

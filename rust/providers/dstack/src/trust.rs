@@ -41,7 +41,8 @@ pub struct DstackTrust {
     /// DER root CA for DCAP; `None` selects Intel's production SGX Root CA.
     pub root_ca_der: Option<Vec<u8>>,
     /// Oldest issue/update time accepted across the evidence-carried Intel
-    /// TCB info, QE identity, root CRL and PCK CRL.
+    /// TCB info, QE identity and PCK CRL. The root CRL is excluded because
+    /// Intel issues it on a much longer cadence.
     pub min_collateral_issued_ms: u64,
     /// Accepted DCAP TCB statuses (default `UpToDate`).
     pub allowed_tcb_statuses: BTreeSet<String>,

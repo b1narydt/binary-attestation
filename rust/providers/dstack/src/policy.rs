@@ -33,6 +33,26 @@ pub struct BootMeasurements {
     pub td_attributes: Option<String>,
 }
 
+impl BootMeasurements {
+    /// `pinned` admits `live` when the four registers are equal and each TD
+    /// field the pin carries equals the live value. A pin without `xfam` or
+    /// `td_attributes` (older policy JSON) does not constrain that field.
+    pub fn admits(&self, live: &BootMeasurements) -> bool {
+        self.mrtd == live.mrtd
+            && self.rtmr0 == live.rtmr0
+            && self.rtmr1 == live.rtmr1
+            && self.rtmr2 == live.rtmr2
+            && self
+                .xfam
+                .as_ref()
+                .is_none_or(|pinned| live.xfam.as_ref() == Some(pinned))
+            && self
+                .td_attributes
+                .as_ref()
+                .is_none_or(|pinned| live.td_attributes.as_ref() == Some(pinned))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DstackBrc100IdentityPolicy {
     /// Accepted `os_image_hash` values (lowercase hex). Required, non-empty.
@@ -40,8 +60,10 @@ pub struct DstackBrc100IdentityPolicy {
     /// Accepted workload compose hashes. Required, non-empty.
     pub(crate) allowed_compose_hashes: BTreeSet<String>,
     pub(crate) allowed_app_ids: Option<BTreeSet<String>>,
-    /// Optional pins of the firmware/kernel/initrd registers, the 0.5.x
-    /// equivalent of the `dstack-mr` derivation from the OS image.
+    /// Pins of the firmware/kernel/initrd registers, the 0.5.x equivalent of
+    /// the `dstack-mr` derivation from the OS image, plus the TD `XFAM` and
+    /// `ATTRIBUTES` when the pin carries them. A live tuple is admitted only
+    /// if some pin [`BootMeasurements::admits`] it.
     pub(crate) allowed_boot_measurements: BTreeSet<BootMeasurements>,
     /// Optional pins of `vm_config_sha256` (the carried, unmeasured config).
     pub(crate) allowed_vm_config_digests: Option<BTreeSet<String>>,
@@ -194,10 +216,14 @@ impl PolicyEvaluator for DstackBrc100IdentityPolicy {
             rtmr0: text(parent, "rtmr0")?.to_owned(),
             rtmr1: text(parent, "rtmr1")?.to_owned(),
             rtmr2: text(parent, "rtmr2")?.to_owned(),
-            xfam: None,
-            td_attributes: None,
+            xfam: Some(text(parent, "xfam")?.to_owned()),
+            td_attributes: Some(text(parent, "td_attributes")?.to_owned()),
         };
-        if !self.allowed_boot_measurements.contains(&live) {
+        if !self
+            .allowed_boot_measurements
+            .iter()
+            .any(|pinned| pinned.admits(&live))
+        {
             return Err(Denial::MeasurementMismatch);
         }
         Ok(PolicyDecision {

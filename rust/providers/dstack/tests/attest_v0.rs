@@ -152,7 +152,10 @@ fn verified_component_exposes_the_quote_td_attributes_and_xfam() {
     let output = verify(&attest_verifier(), &probe).expect("live evidence verifies");
     let parsed = dcap_qvl::quote::Quote::parse(&decoded(&probe).quote).expect("quote parses");
     let td = parsed.report.as_td10().expect("TD report");
-    assert_eq!(measurement(&output, "td_attributes"), hex_encode(&td.td_attributes));
+    assert_eq!(
+        measurement(&output, "td_attributes"),
+        hex_encode(&td.td_attributes)
+    );
     assert_eq!(measurement(&output, "xfam"), hex_encode(&td.xfam));
     assert_eq!(measurement(&output, "td_attributes").len(), 16);
     assert_eq!(measurement(&output, "xfam").len(), 16);

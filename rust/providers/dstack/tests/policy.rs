@@ -198,6 +198,8 @@ fn boot_measurement_pins_are_enforced() {
         rtmr0: claims[0].measurements["rtmr0"].as_str().unwrap().into(),
         rtmr1: claims[0].measurements["rtmr1"].as_str().unwrap().into(),
         rtmr2: claims[0].measurements["rtmr2"].as_str().unwrap().into(),
+        xfam: None,
+        td_attributes: None,
     };
     let mut artifact = policy_artifact();
     artifact.allowed_boot_measurements = vec![live.clone()];
@@ -212,6 +214,86 @@ fn boot_measurement_pins_are_enforced() {
         evaluate_at(&policy, &probe, &claims, &policy_snapshot),
         Err(Denial::MeasurementMismatch)
     );
+}
+
+/// The live tuple including the two TD-level fields the quote authenticates.
+fn live_boot_measurements(claims: &[VerifiedComponent]) -> BootMeasurements {
+    let text = |key: &str| claims[0].measurements[key].as_str().unwrap().to_owned();
+    BootMeasurements {
+        mrtd: text("mrtd"),
+        rtmr0: text("rtmr0"),
+        rtmr1: text("rtmr1"),
+        rtmr2: text("rtmr2"),
+        xfam: Some(text("xfam")),
+        td_attributes: Some(text("td_attributes")),
+    }
+}
+
+#[test]
+fn xfam_and_td_attributes_pins_are_compared_exactly() {
+    let probe = probe_brc100();
+    let claims = verified_claims(&probe);
+    let live = live_boot_measurements(&claims);
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![live.clone()];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    evaluate_at(&policy, &probe, &claims, &policy_snapshot).expect("live TD attributes and XFAM");
+
+    let mut other_xfam = live.clone();
+    other_xfam.xfam = Some("00".repeat(8));
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![other_xfam];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    assert_eq!(
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
+        Err(Denial::MeasurementMismatch)
+    );
+
+    let mut other_attributes = live.clone();
+    // Flip one bit outside DEBUG/SEPT_VE: a PKS/KL/PERFMON-class difference.
+    let mut attributes = hex_decode(live.td_attributes.as_deref().unwrap());
+    attributes[3] ^= 0x40;
+    other_attributes.td_attributes = Some(hex_encode(&attributes));
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![other_attributes];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    assert_eq!(
+        evaluate_at(&policy, &probe, &claims, &policy_snapshot),
+        Err(Denial::MeasurementMismatch)
+    );
+}
+
+#[test]
+fn boot_tuple_without_td_fields_still_parses_and_pins_the_registers_only() {
+    // An older policy JSON (four registers, no `xfam`/`tdAttributes`) must keep
+    // working for consumers that pin their own copy of this crate.
+    let probe = probe_brc100();
+    let claims = verified_claims(&probe);
+    let registers_only: BootMeasurements = serde_json::from_value(json!({
+        "mrtd": claims[0].measurements["mrtd"],
+        "rtmr0": claims[0].measurements["rtmr0"],
+        "rtmr1": claims[0].measurements["rtmr1"],
+        "rtmr2": claims[0].measurements["rtmr2"],
+    }))
+    .expect("four-register tuple parses");
+    assert!(registers_only.xfam.is_none() && registers_only.td_attributes.is_none());
+    let serialized = serde_json::to_value(&registers_only).expect("serialize");
+    assert!(serialized.get("xfam").is_none() && serialized.get("tdAttributes").is_none());
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![registers_only];
+    let (policy, policy_snapshot) = configured_policy(&probe, artifact);
+    evaluate_at(&policy, &probe, &claims, &policy_snapshot).expect("registers-only tuple");
+
+    // Malformed TD fields are refused at plugin construction, like the registers.
+    let mut bad = live_boot_measurements(&claims);
+    bad.xfam = Some("zz".repeat(8));
+    let mut artifact = policy_artifact();
+    artifact.allowed_boot_measurements = vec![bad];
+    let snapshot = snapshot_with_artifact(&probe.challenge, artifact);
+    assert!(matches!(
+        DstackSnapshotPlugins::from_snapshot(&snapshot),
+        Err(Denial::Malformed)
+    ));
 }
 
 #[test]

@@ -25,6 +25,12 @@ pub struct BootMeasurements {
     pub rtmr0: String,
     pub rtmr1: String,
     pub rtmr2: String,
+    /// TD `XFAM` (lowercase hex of 8 bytes). Absent in older policy JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xfam: Option<String>,
+    /// TD `ATTRIBUTES` (lowercase hex of 8 bytes). Absent in older policy JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub td_attributes: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +194,8 @@ impl PolicyEvaluator for DstackBrc100IdentityPolicy {
             rtmr0: text(parent, "rtmr0")?.to_owned(),
             rtmr1: text(parent, "rtmr1")?.to_owned(),
             rtmr2: text(parent, "rtmr2")?.to_owned(),
+            xfam: None,
+            td_attributes: None,
         };
         if !self.allowed_boot_measurements.contains(&live) {
             return Err(Denial::MeasurementMismatch);

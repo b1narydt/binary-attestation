@@ -242,6 +242,8 @@ pub fn boot_measurements() -> BootMeasurements {
         rtmr0: value("rtmr0"),
         rtmr1: value("rtmr1"),
         rtmr2: value("rtmr2"),
+        xfam: None,
+        td_attributes: None,
     }
 }
 

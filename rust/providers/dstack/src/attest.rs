@@ -272,6 +272,8 @@ fn measurements(
     put("rtmr1", &td.rt_mr1);
     put("rtmr2", &td.rt_mr2);
     put("rtmr3", &td.rt_mr3);
+    put("td_attributes", &td.td_attributes);
+    put("xfam", &td.xfam);
     put("mr_config_id", &td.mr_config_id);
     put("compose_hash", &launch.compose_hash);
     put("app_id", &launch.app_id);

@@ -34,8 +34,13 @@
 //! 8. `mr_config_id == 0x01 || compose_hash || 0`, `key-provider.id ==` pinned
 //!    KMS CA SPKI, optional `mr-kms` pin, `os_image_hash` allowlist, optional
 //!    compose-hash / app-id allowlists, `vm_config.os_image_hash` consistency;
-//! 9. normalized measurements and `valid_until_ms` capped at the pinned
-//!    collateral's earliest expiry.
+//! 9. normalized measurements (the registers, `td_attributes`, `xfam`,
+//!    launch values, `vm_config_sha256`) and `valid_until_ms` capped at the
+//!    carried collateral's earliest expiry.
+//!
+//! The policy ([`DstackBrc100IdentityPolicy`]) then requires some pinned
+//! [`BootMeasurements`] to admit the live tuple: MRTD and RTMR0-2 always equal,
+//! and `xfam` / `tdAttributes` equal whenever the pin carries them.
 //!
 //! The child never binds the BCAP1 digest directly (its `binding_digest` is
 //! all zero) so the core accepts it only through a verified relation edge from

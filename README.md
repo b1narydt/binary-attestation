@@ -21,6 +21,14 @@ This repository owns:
   relation and a BRC-100 identity policy (optional in-TEE `producer`);
 - later provider/runtime packages for dstack 0.6+, DCAP, and NVIDIA evidence.
 
+`binary-attestation-dstack`'s policy artifact (`DstackPolicyArtifactV1`,
+media type `application/vnd.binary.dstack-policy+json;version=1`) pins boot
+tuples in `allowedBootMeasurements`: `mrtd`, `rtmr0`, `rtmr1`, `rtmr2` (48-byte
+lowercase hex, required) and `xfam`, `tdAttributes` (8-byte lowercase hex,
+optional). A tuple admits a quote only if every field it carries equals the
+authenticated value; a tuple without the two TD fields constrains the registers
+alone, so older policy JSON keeps parsing and verifying.
+
 It does not own Atlas Relay behavior, MPC ceremonies, provider-native host
 runtimes in browser packages, or capability/key release policy.
 

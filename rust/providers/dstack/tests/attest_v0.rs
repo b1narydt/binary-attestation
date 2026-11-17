@@ -147,6 +147,21 @@ fn live_brc100_probe_envelope_verifies_with_pinned_trust() {
 }
 
 #[test]
+fn verified_component_exposes_the_quote_td_attributes_and_xfam() {
+    let probe = probe_brc100();
+    let output = verify(&attest_verifier(), &probe).expect("live evidence verifies");
+    let parsed = dcap_qvl::quote::Quote::parse(&decoded(&probe).quote).expect("quote parses");
+    let td = parsed.report.as_td10().expect("TD report");
+    assert_eq!(
+        measurement(&output, "td_attributes"),
+        hex_encode(&td.td_attributes)
+    );
+    assert_eq!(measurement(&output, "xfam"), hex_encode(&td.xfam));
+    assert_eq!(measurement(&output, "td_attributes").len(), 16);
+    assert_eq!(measurement(&output, "xfam").len(), 16);
+}
+
+#[test]
 fn scale_decode_encode_round_trip_is_byte_exact() {
     for probe in [probe_did(), probe_brc100()] {
         let envelope = decoded(&probe);

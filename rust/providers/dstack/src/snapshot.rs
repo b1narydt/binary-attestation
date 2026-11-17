@@ -216,6 +216,9 @@ fn unique_boot(values: &[BootMeasurements]) -> Result<BTreeSet<BootMeasurements>
         for value in [&boot.mrtd, &boot.rtmr0, &boot.rtmr1, &boot.rtmr2] {
             lower_hex_array::<48>(value)?;
         }
+        for value in [&boot.xfam, &boot.td_attributes].into_iter().flatten() {
+            lower_hex_array::<8>(value)?;
+        }
     }
     let set = values.iter().cloned().collect::<BTreeSet<_>>();
     if set.len() != values.len() {
